@@ -13,6 +13,7 @@ import { PlayerView } from './components/PlayerView';
 import { ThemeProvider } from './lib/theme';
 import { syncChannel, getPopoutUrl } from './lib/syncChannel';
 import { getActivePlaybackState, saveActivePlaybackState } from './lib/localStorageState';
+import { getMemoryFile } from './lib/db';
 
 function getInitialViewMode(): 'controller' | 'player' | 'split' {
   if (typeof window === 'undefined') return 'split';
@@ -73,14 +74,41 @@ export default function App() {
         if (msg.payload.currentTime !== undefined) {
           latestTimeRef.current = msg.payload.currentTime;
         }
+        if (msg.payload?.isPopout) {
+          setIsExternalActive(true);
+          const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
+          if (videoEl) {
+            try {
+              if (!videoEl.paused) videoEl.pause();
+              videoEl.muted = true;
+            } catch {}
+          }
+        }
       } else if (msg.type === 'SYNC_PONG' && msg.payload?.trackId) {
         setActiveTrackId(msg.payload.trackId);
         latestTrackIdRef.current = msg.payload.trackId;
         if (msg.payload.currentTime !== undefined) {
           latestTimeRef.current = msg.payload.currentTime;
         }
+        if (msg.payload?.isPopout) {
+          setIsExternalActive(true);
+          const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
+          if (videoEl) {
+            try {
+              if (!videoEl.paused) videoEl.pause();
+              videoEl.muted = true;
+            } catch {}
+          }
+        }
       } else if (msg.type === 'PLAYER_CONNECTED' && msg.payload?.isPopout) {
         setIsExternalActive(true);
+        const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
+        if (videoEl) {
+          try {
+            if (!videoEl.paused) videoEl.pause();
+            videoEl.muted = true;
+          } catch {}
+        }
       } else if (msg.type === 'PLAYER_DISCONNECTED' && msg.payload?.isPopout) {
         setIsExternalActive(false);
         // Automatically switch to split view so the video player is visible and mounted
@@ -145,10 +173,11 @@ export default function App() {
       syncChannel.registerPopoutWindow(res.win);
     }
 
-    // 2. Pause embedded preview video AFTER opening new tab so gesture isn't consumed beforehand
-    if (videoEl && !videoEl.paused) {
+    // 2. Pause and mute embedded preview video AFTER opening new tab so volume only plays from the tab where video is playing
+    if (videoEl) {
       try {
         videoEl.pause();
+        videoEl.muted = true;
       } catch {}
     }
 
@@ -228,8 +257,11 @@ export default function App() {
                           (window as any).__PWA_ACTIVE_TRACK_ID__ = tid;
                           (window as any).__PWA_ACTIVE_TRACK_TIME__ = cur || 0;
                         }
-                        if (videoEl && !videoEl.paused) {
-                          try { videoEl.pause(); } catch {}
+                        if (videoEl) {
+                          try {
+                            videoEl.pause();
+                            videoEl.muted = true;
+                          } catch {}
                         }
                         setIsExternalActive(true);
                       }}

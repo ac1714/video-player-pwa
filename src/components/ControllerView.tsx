@@ -486,6 +486,13 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
       switch (msg.type) {
         case 'PLAYER_CONNECTED': {
           setIsPlayerConnected(true);
+          const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
+          if (videoEl) {
+            try {
+              if (!videoEl.paused) videoEl.pause();
+              videoEl.muted = true;
+            } catch {}
+          }
           // Only send track payload to dedicated external popout window to avoid loops with embedded player
           if (msg.payload?.isPopout) {
             const currentId = activeTrackIdRef.current || activeTrackId || (mediaFilesRef.current?.[0]?.id);
@@ -923,6 +930,12 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
   const handleOpenPopoutWindow = (trackIdToOpen?: string) => {
     const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
+    if (videoEl) {
+      try {
+        if (!videoEl.paused) videoEl.pause();
+        videoEl.muted = true;
+      } catch {}
+    }
     const targetTime = (videoEl && Number.isFinite(videoEl.currentTime) && videoEl.currentTime > 0)
       ? videoEl.currentTime
       : (currentTimeRef.current || currentTime || 0);
@@ -933,6 +946,7 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
     const blob = mem?.file || fileObj?.blobFallback;
     const res = syncChannel.openPopoutWindow(targetId, targetTime, blob);
     if (res.win) {
+      syncChannel.registerPopoutWindow(res.win);
       setStatusNotice('Opened video player in new tab');
       setPopoutBlockedUrl(null);
     } else {
@@ -1629,31 +1643,24 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
               e.currentTarget.href = getPopoutUrl(tid, cur);
             }}
             onClick={(e) => {
+              e.preventDefault();
               const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
               const targetTime = (videoEl && Number.isFinite(videoEl.currentTime) && videoEl.currentTime > 0)
                 ? videoEl.currentTime
                 : (currentTimeRef.current || currentTime || (window as any).__PWA_ACTIVE_TRACK_TIME__ || 0);
               const targetId = activeTrackIdRef.current || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
               
-              const url = getPopoutUrl(targetId, targetTime);
-              e.currentTarget.href = url;
-
-              if (targetId) {
-                saveActivePlaybackState({ trackId: targetId, isPlaying: true, lastTime: targetTime, currentTime: targetTime });
-                (window as any).__PWA_ACTIVE_TRACK_ID__ = targetId;
-                (window as any).__PWA_ACTIVE_TRACK_TIME__ = targetTime;
-                const mem = getMemoryFile(targetId);
-                const fileObj = mediaFiles.find((f) => f.id === targetId);
-                const blob = mem?.file || fileObj?.blobFallback;
-                if (blob) {
-                  (window as any).__PWA_ACTIVE_MEDIA_BLOB__ = blob;
-                }
+              if (videoEl) {
+                try {
+                  if (!videoEl.paused) videoEl.pause();
+                  videoEl.muted = true;
+                } catch {}
               }
 
-              if (videoEl && !videoEl.paused) {
-                try {
-                  videoEl.pause();
-                } catch {}
+              if (onOpenPlayerInNewTab) {
+                onOpenPlayerInNewTab(targetId, targetTime);
+              } else {
+                handleOpenPopoutWindow(targetId);
               }
 
               setStatusNotice('Opening dedicated video player in a new browser tab...');
@@ -2711,31 +2718,24 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                   e.currentTarget.href = getPopoutUrl(tid, cur);
                 }}
                 onClick={(e) => {
+                  e.preventDefault();
                   const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
                   const targetTime = (videoEl && Number.isFinite(videoEl.currentTime) && videoEl.currentTime > 0)
                     ? videoEl.currentTime
                     : (currentTimeRef.current || currentTime || (window as any).__PWA_ACTIVE_TRACK_TIME__ || 0);
                   const targetId = activeTrackIdRef.current || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
                   
-                  const url = getPopoutUrl(targetId, targetTime);
-                  e.currentTarget.href = url;
-
-                  if (targetId) {
-                    saveActivePlaybackState({ trackId: targetId, isPlaying: true, lastTime: targetTime, currentTime: targetTime });
-                    (window as any).__PWA_ACTIVE_TRACK_ID__ = targetId;
-                    (window as any).__PWA_ACTIVE_TRACK_TIME__ = targetTime;
-                    const mem = getMemoryFile(targetId);
-                    const fileObj = mediaFiles.find((f) => f.id === targetId);
-                    const blob = mem?.file || fileObj?.blobFallback;
-                    if (blob) {
-                      (window as any).__PWA_ACTIVE_MEDIA_BLOB__ = blob;
-                    }
+                  if (videoEl) {
+                    try {
+                      if (!videoEl.paused) videoEl.pause();
+                      videoEl.muted = true;
+                    } catch {}
                   }
 
-                  if (videoEl && !videoEl.paused) {
-                    try {
-                      videoEl.pause();
-                    } catch {}
+                  if (onOpenPlayerInNewTab) {
+                    onOpenPlayerInNewTab(targetId, targetTime);
+                  } else {
+                    handleOpenPopoutWindow(targetId);
                   }
 
                   setStatusNotice('Opening video player in new tab...');

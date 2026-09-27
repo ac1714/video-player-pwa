@@ -81,12 +81,14 @@ export type SyncMessage =
         currentTime: number;
         duration: number;
         trackId?: string;
+        isPopout?: boolean;
       };
     }
   | {
       type: 'STATE_CHANGE';
       payload: {
         state: 'playing' | 'paused' | 'buffering' | 'idle';
+        isPopout?: boolean;
       };
     }
   | {
@@ -172,6 +174,7 @@ export type SyncMessage =
         volume: number;
         muted: boolean;
         loop?: boolean;
+        isPopout?: boolean;
       };
     };
 

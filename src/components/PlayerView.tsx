@@ -73,8 +73,12 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
 }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const isExternalActiveRef = useRef<boolean>(isExternalActive);
-  const prevIsExternalRef = useRef<boolean>(isExternalActive);
+  const [internalExternalActive, setInternalExternalActive] = useState<boolean>(isExternalActive);
+  const activeExternal = isExternalActive || internalExternalActive;
+  const isExternalActiveRef = useRef<boolean>(activeExternal);
+  const prevIsExternalRef = useRef<boolean>(activeExternal);
+  const wasAutoplayMutedRef = useRef<boolean>(false);
+  const [showAutoplayUnmutePrompt, setShowAutoplayUnmutePrompt] = useState<boolean>(false);
   const currentTrackRef = useRef<MediaFile | null>(null);
   const lastLoadedTrackIdRef = useRef<string | null>(null);
   const isLoadingTrackRef = useRef<boolean>(false);
@@ -84,22 +88,60 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
   const loadTrackByIdRef = useRef<(trackId: string, autoPlay?: boolean, directBlob?: Blob, startTime?: number) => void>(() => {});
 
   useEffect(() => {
-    const wasExternal = prevIsExternalRef.current;
-    prevIsExternalRef.current = isExternalActive;
-    isExternalActiveRef.current = isExternalActive;
+    setInternalExternalActive(isExternalActive);
+  }, [isExternalActive]);
 
-    if (isExternalActive && videoRef.current && !videoRef.current.paused) {
-      videoRef.current.pause();
-    } else if (wasExternal && !isExternalActive && embedded) {
-      // Pop-out tab closed: automatically resume playback in this window
+  // If autoplay was muted by browser policy on new tab load, unmute on first user interaction in this tab
+  useEffect(() => {
+    if (embedded) return;
+    const tryUnmute = () => {
+      if (wasAutoplayMutedRef.current && videoRef.current) {
+        const state = getActivePlaybackState();
+        const savedMuted = state.muted ?? false;
+        const savedVolume = state.volume ?? 1;
+        videoRef.current.muted = savedMuted;
+        videoRef.current.volume = savedVolume;
+        setIsMuted(savedMuted);
+        setVolume(savedVolume);
+        wasAutoplayMutedRef.current = false;
+        setShowAutoplayUnmutePrompt(false);
+      }
+    };
+
+    window.addEventListener('pointerdown', tryUnmute, { capture: true });
+    window.addEventListener('keydown', tryUnmute, { capture: true });
+    return () => {
+      window.removeEventListener('pointerdown', tryUnmute, { capture: true });
+      window.removeEventListener('keydown', tryUnmute, { capture: true });
+    };
+  }, [embedded]);
+
+  useEffect(() => {
+    const wasExternal = prevIsExternalRef.current;
+    prevIsExternalRef.current = activeExternal;
+    isExternalActiveRef.current = activeExternal;
+
+    if (activeExternal && videoRef.current) {
+      if (!videoRef.current.paused) {
+        videoRef.current.pause();
+      }
+      videoRef.current.muted = true;
+    } else if (wasExternal && !activeExternal && embedded) {
+      // Pop-out tab closed: automatically resume playback in this window with unmuted audio
       const state = getActivePlaybackState();
       const targetTrackId = state.trackId || currentTrackRef.current?.id;
       const resumeTime = state.lastTime ?? state.currentTime ?? 0;
+      if (videoRef.current) {
+        videoRef.current.muted = state.muted ?? false;
+        videoRef.current.volume = state.volume ?? 1;
+        setIsMuted(state.muted ?? false);
+        setVolume(state.volume ?? 1);
+      }
       if (targetTrackId) {
         loadTrackByIdRef.current(targetTrackId, true, undefined, resumeTime);
       }
     }
-  }, [isExternalActive, embedded]);
+  }, [activeExternal, embedded]);
 
   // Viewport Fit mode: contain (fit uncropped), cover (fill edge-to-edge), fill (stretch)
   const [fitMode, setFitMode] = useState<'contain' | 'cover' | 'fill'>(() => {
@@ -342,6 +384,10 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
             p.catch(() => {
               if (videoRef.current) {
                 videoRef.current.muted = true;
+                if (!embedded) {
+                  wasAutoplayMutedRef.current = true;
+                  setShowAutoplayUnmutePrompt(true);
+                }
                 videoRef.current.play().catch(() => {});
               }
             });
@@ -380,6 +426,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           volume,
           muted: isMuted,
           loop: isLooping,
+          isPopout: !embedded,
         },
       });
 
@@ -419,21 +466,25 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
               playPromise
                 .then(() => {
                   setIsPlaying(true);
-                  syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing' } });
+                  syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing', isPopout: !embedded } });
                 })
                 .catch((playErr) => {
                   console.warn('Autoplay prevented, attempting muted fallback:', playErr);
                   if (videoRef.current) {
                     videoRef.current.muted = true;
+                    if (!embedded) {
+                      wasAutoplayMutedRef.current = true;
+                      setShowAutoplayUnmutePrompt(true);
+                    }
                     videoRef.current
                       .play()
                       .then(() => {
                         setIsPlaying(true);
-                        syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing' } });
+                        syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing', isPopout: !embedded } });
                       })
                       .catch(() => {
                         setIsPlaying(false);
-                        syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'paused' } });
+                        syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'paused', isPopout: !embedded } });
                       });
                   }
                 });
@@ -483,6 +534,10 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
             p.catch(() => {
               if (videoRef.current) {
                 videoRef.current.muted = true;
+                if (!embedded) {
+                  wasAutoplayMutedRef.current = true;
+                  setShowAutoplayUnmutePrompt(true);
+                }
                 videoRef.current.play().catch(() => {});
               }
             });
@@ -631,6 +686,10 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                 p.catch(() => {
                   if (videoRef.current) {
                     videoRef.current.muted = true;
+                    if (!embedded) {
+                      wasAutoplayMutedRef.current = true;
+                      setShowAutoplayUnmutePrompt(true);
+                    }
                     videoRef.current.play().catch(() => {});
                   }
                 });
@@ -1340,6 +1399,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         volume: initial.volume,
         muted: initial.muted,
         loop: initial.loop ?? false,
+        isPopout: !embedded,
       },
     });
 
@@ -1440,7 +1500,13 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           break;
 
         case 'LOAD_TRACK':
-          if (embedded && isExternalActiveRef.current) return;
+          if (embedded && isExternalActiveRef.current) {
+            if (videoRef.current) {
+              if (!videoRef.current.paused) videoRef.current.pause();
+              videoRef.current.muted = true;
+            }
+            return;
+          }
           const seekTime = (msg.payload.currentTime !== undefined && msg.payload.currentTime > 0)
             ? msg.payload.currentTime
             : undefined;
@@ -1478,7 +1544,13 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         }
 
         case 'PLAY':
-          if (embedded && isExternalActiveRef.current) return;
+          if (embedded && isExternalActiveRef.current) {
+            if (videoRef.current) {
+              if (!videoRef.current.paused) videoRef.current.pause();
+              videoRef.current.muted = true;
+            }
+            return;
+          }
           if (videoRef.current) {
             if (!videoRef.current.src || videoRef.current.src === window.location.href || videoRef.current.src === '') {
               const state = getActivePlaybackState();
@@ -1490,11 +1562,15 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                 console.warn('Play triggered failed, attempting muted playback:', err);
                 if (videoRef.current) {
                   videoRef.current.muted = true;
+                  if (!embedded) {
+                    wasAutoplayMutedRef.current = true;
+                    setShowAutoplayUnmutePrompt(true);
+                  }
                   videoRef.current
                     .play()
                     .then(() => {
                       setIsPlaying(true);
-                      syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing' } });
+                      syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing', isPopout: !embedded } });
                     })
                     .catch(() => {});
                 }
@@ -1524,13 +1600,23 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           break;
 
         case 'SET_VOLUME':
-          if (videoRef.current) {
-            videoRef.current.volume = msg.payload.volume;
-            videoRef.current.muted = msg.payload.muted;
-          }
           setVolume(msg.payload.volume);
           setIsMuted(msg.payload.muted);
           setVolumeState(msg.payload.volume, msg.payload.muted);
+          if (videoRef.current) {
+            videoRef.current.volume = msg.payload.volume;
+            if (!embedded || !isExternalActiveRef.current) {
+              videoRef.current.muted = msg.payload.muted;
+              if (wasAutoplayMutedRef.current) {
+                wasAutoplayMutedRef.current = false;
+                setShowAutoplayUnmutePrompt(false);
+              }
+            } else {
+              // Embedded preview MUST remain 100% muted and paused while dedicated tab is playing
+              videoRef.current.muted = true;
+              if (!videoRef.current.paused) videoRef.current.pause();
+            }
+          }
           break;
 
         case 'TOGGLE_PIP':
@@ -1548,7 +1634,26 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           }
           break;
 
+        case 'PLAYER_CONNECTED':
+          if (embedded && msg.payload?.isPopout) {
+            isExternalActiveRef.current = true;
+            setInternalExternalActive(true);
+            if (videoRef.current) {
+              if (!videoRef.current.paused) videoRef.current.pause();
+              videoRef.current.muted = true;
+            }
+          }
+          break;
+
         case 'TIME_UPDATE':
+          if (embedded && msg.payload?.isPopout) {
+            isExternalActiveRef.current = true;
+            setInternalExternalActive(true);
+            if (videoRef.current) {
+              if (!videoRef.current.paused) videoRef.current.pause();
+              videoRef.current.muted = true;
+            }
+          }
           if (msg.payload?.trackId) {
             latestExternalTrackIdRef.current = msg.payload.trackId;
             if (msg.payload.currentTime !== undefined) {
@@ -1558,6 +1663,14 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           break;
 
         case 'SYNC_PONG':
+          if (embedded && msg.payload?.isPopout) {
+            isExternalActiveRef.current = true;
+            setInternalExternalActive(true);
+            if (videoRef.current) {
+              if (!videoRef.current.paused) videoRef.current.pause();
+              videoRef.current.muted = true;
+            }
+          }
           if (msg.payload?.trackId) {
             latestExternalTrackIdRef.current = msg.payload.trackId;
             if (msg.payload.currentTime !== undefined) {
@@ -1568,12 +1681,22 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
 
         case 'BRING_PLAYBACK_HERE':
           if (!embedded) {
-            videoRef.current?.pause();
+            if (videoRef.current) {
+              videoRef.current.pause();
+              videoRef.current.muted = true;
+            }
             setIsPlaying(false);
-            syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'paused' } });
+            syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'paused', isPopout: !embedded } });
           } else {
             isExternalActiveRef.current = false;
-            setIsExternalActive(false);
+            setInternalExternalActive(false);
+            if (videoRef.current) {
+              const state = getActivePlaybackState();
+              videoRef.current.muted = state.muted ?? false;
+              videoRef.current.volume = state.volume ?? 1;
+              setIsMuted(state.muted ?? false);
+              setVolume(state.volume ?? 1);
+            }
             const state = getActivePlaybackState();
             const targetId = msg.payload?.trackId || latestExternalTrackIdRef.current || state.trackId || currentTrackRef.current?.id;
             const resumeTime = (msg.payload?.currentTime !== undefined && msg.payload.currentTime > 0)
@@ -1588,7 +1711,14 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         case 'PLAYER_DISCONNECTED':
           if (embedded && msg.payload?.isPopout) {
             isExternalActiveRef.current = false;
-            setIsExternalActive(false);
+            setInternalExternalActive(false);
+            if (videoRef.current) {
+              const state = getActivePlaybackState();
+              videoRef.current.muted = state.muted ?? false;
+              videoRef.current.volume = state.volume ?? 1;
+              setIsMuted(state.muted ?? false);
+              setVolume(state.volume ?? 1);
+            }
             const state = getActivePlaybackState();
             const targetId = msg.payload.trackId || state.trackId || currentTrackRef.current?.id;
             const resumeTime = (msg.payload.currentTime !== undefined && msg.payload.currentTime > 0)
@@ -1624,6 +1754,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                 volume: videoRef.current.volume,
                 muted: videoRef.current.muted,
                 loop: isLooping,
+                isPopout: !embedded,
               },
             });
           }
@@ -1806,7 +1937,13 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
   };
 
   const onPlay = () => {
-    if (embedded && isExternalActiveRef.current) return;
+    if (embedded && isExternalActiveRef.current) {
+      if (videoRef.current) {
+        if (!videoRef.current.paused) videoRef.current.pause();
+        videoRef.current.muted = true;
+      }
+      return;
+    }
     setIsPlaying(true);
     updatePipControlsState(
       videoRef.current?.currentTime || 0,
@@ -1818,10 +1955,16 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
   };
 
   const onPlaying = () => {
-    if (embedded && isExternalActiveRef.current) return;
+    if (embedded && isExternalActiveRef.current) {
+      if (videoRef.current) {
+        if (!videoRef.current.paused) videoRef.current.pause();
+        videoRef.current.muted = true;
+      }
+      return;
+    }
     setIsPlaying(true);
     setIsBuffering(false);
-    syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing' } });
+    syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing', isPopout: !embedded } });
     if ('mediaSession' in navigator) {
       navigator.mediaSession.playbackState = 'playing';
     }
@@ -1951,7 +2094,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       }`}
     >
       {/* If embedded and external window active, display overlay on top without tearing down video element */}
-      {embedded && isExternalActive && (
+      {embedded && activeExternal && (
         <div
           id="pwa-player-container-external"
           className="absolute inset-0 z-30 bg-neutral-950 flex flex-col items-center justify-center p-6 text-center select-none"
@@ -1964,7 +2107,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
             {currentTrack ? currentTrack.name : 'Popout Player Active'}
           </p>
           <p className="mt-2 text-[11px] text-neutral-500 max-w-xs">
-            Playback is running in your dedicated video tab to prevent duplicate sound.
+            Playback and audio are running exclusively in your dedicated video tab.
           </p>
           <div className="flex items-center gap-2.5 mt-5">
             <button
@@ -2018,7 +2161,10 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                   if (popout && !popout.closed) {
                     try {
                       const popoutVid = popout.document?.getElementById('pwa-main-video-element') as HTMLVideoElement | null;
-                      popoutVid?.pause();
+                      if (popoutVid) {
+                        popoutVid.pause();
+                        popoutVid.muted = true;
+                      }
                       popout.close();
                     } catch {}
                   }
@@ -2039,7 +2185,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                   }
 
                   isExternalActiveRef.current = false;
-                  setIsExternalActive(false);
+                  setInternalExternalActive(false);
 
                   syncChannel.post({
                     type: 'BRING_PLAYBACK_HERE',
@@ -2047,6 +2193,13 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                   });
 
                   if (targetId) {
+                    if (videoRef.current) {
+                      const st = getActivePlaybackState();
+                      videoRef.current.muted = st.muted ?? false;
+                      videoRef.current.volume = st.volume ?? 1;
+                      setIsMuted(st.muted ?? false);
+                      setVolume(st.volume ?? 1);
+                    }
                     loadTrackById(targetId, true, undefined, targetTime);
                   }
                   onBringBack();
@@ -2059,6 +2212,32 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
               </button>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Click-to-Unmute prompt for dedicated tab when browser policy forced muted autoplay */}
+      {showAutoplayUnmutePrompt && !embedded && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 animate-pulse">
+          <button
+            onClick={() => {
+              if (videoRef.current) {
+                const state = getActivePlaybackState();
+                const savedMuted = state.muted ?? false;
+                const savedVolume = state.volume ?? 1;
+                videoRef.current.muted = savedMuted;
+                videoRef.current.volume = savedVolume;
+                setIsMuted(savedMuted);
+                setVolume(savedVolume);
+                wasAutoplayMutedRef.current = false;
+                setShowAutoplayUnmutePrompt(false);
+              }
+            }}
+            className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-amber-500 hover:bg-amber-400 text-black font-semibold text-xs shadow-xl transition cursor-pointer active:scale-95"
+            title="Click to enable sound"
+          >
+            <VolumeX className="w-4 h-4 text-black" />
+            <span>Click to Enable Sound</span>
+          </button>
         </div>
       )}
       {/* Native HTML5 Video Element */}
