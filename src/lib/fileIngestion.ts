@@ -139,8 +139,6 @@ export async function ingestFileList(
 
   const collected: MediaFile[] = [];
   const list = Array.from(files);
-  const CHUNK_SIZE = 20;
-  let currentChunk: MediaFile[] = [];
 
   for (const f of list) {
     if (isVideoFile(f.name, f.type)) {
@@ -188,27 +186,19 @@ export async function ingestFileList(
       };
 
       collected.push(record);
-      currentChunk.push(record);
       existingByName.set(record.name.toLowerCase(), record);
       if (record.relativePath) {
         existingByName.set(record.relativePath.toLowerCase(), record);
       }
-
-      if (currentChunk.length >= CHUNK_SIZE) {
-        if (onProgress) {
-          onProgress(currentChunk, collected.length);
-        }
-        await saveMediaFilesBatch(currentChunk);
-        currentChunk = [];
-      }
     }
   }
 
-  if (currentChunk.length > 0) {
+  // Instantly display all videos in the catalog simultaneously
+  if (collected.length > 0) {
     if (onProgress) {
-      onProgress(currentChunk, collected.length);
+      onProgress(collected, collected.length);
     }
-    await saveMediaFilesBatch(currentChunk);
+    await saveMediaFilesBatch(collected);
   }
 
   return {
@@ -342,52 +332,48 @@ async function scanDirectory(
     console.warn(`Could not iterate directory ${dirHandle.name}:`, iterErr);
   }
 
-  // Process video handles in parallel chunks of 20 for maximum speed and instant catalog rendering
-  const CHUNK_SIZE = 20;
-  for (let i = 0; i < videoHandles.length; i += CHUNK_SIZE) {
-    const chunk = videoHandles.slice(i, i + CHUNK_SIZE);
-    const resolvedChunk = await Promise.all(
-      chunk.map(async (fileHandle) => {
-        try {
-          const file = await fileHandle.getFile();
-          const relPath = pathPrefix ? `${pathPrefix}/${fileHandle.name}` : fileHandle.name;
-          const matched = lookup!.get(relPath.toLowerCase()) || lookup!.get(fileHandle.name.toLowerCase());
-          const fileId = matched ? matched.id : generateUUID();
+  // Process all video handles in parallel for instant catalog rendering
+  const resolvedChunk = await Promise.all(
+    videoHandles.map(async (fileHandle) => {
+      try {
+        const file = await fileHandle.getFile();
+        const relPath = pathPrefix ? `${pathPrefix}/${fileHandle.name}` : fileHandle.name;
+        const matched = lookup!.get(relPath.toLowerCase()) || lookup!.get(fileHandle.name.toLowerCase());
+        const fileId = matched ? matched.id : generateUUID();
 
-          registerMemoryFile(fileId, file, fileHandle);
-          return {
-            id: fileId,
-            name: fileHandle.name,
-            relativePath: relPath,
-            mimeType: file.type || getMimeFromFilename(fileHandle.name),
-            size: file.size,
-            lastModified: file.lastModified,
-            handle: fileHandle,
-            blobFallback: file,
-            createdAt: matched ? matched.createdAt : Date.now(),
-          } as MediaFile;
-        } catch (e) {
-          console.warn(`Could not read metadata for ${fileHandle.name}:`, e);
-          return null;
-        }
-      })
-    );
+        registerMemoryFile(fileId, file, fileHandle);
+        return {
+          id: fileId,
+          name: fileHandle.name,
+          relativePath: relPath,
+          mimeType: file.type || getMimeFromFilename(fileHandle.name),
+          size: file.size,
+          lastModified: file.lastModified,
+          handle: fileHandle,
+          blobFallback: file,
+          createdAt: matched ? matched.createdAt : Date.now(),
+        } as MediaFile;
+      } catch (e) {
+        console.warn(`Could not read metadata for ${fileHandle.name}:`, e);
+        return null;
+      }
+    })
+  );
 
-    const validBatch = resolvedChunk.filter((item): item is MediaFile => item !== null);
-    if (validBatch.length > 0) {
-      collected.push(...validBatch);
-      for (const item of validBatch) {
-        lookup!.set(item.name.toLowerCase(), item);
-        if (item.relativePath) {
-          lookup!.set(item.relativePath.toLowerCase(), item);
-        }
+  const validBatch = resolvedChunk.filter((item): item is MediaFile => item !== null);
+  if (validBatch.length > 0) {
+    collected.push(...validBatch);
+    for (const item of validBatch) {
+      lookup!.set(item.name.toLowerCase(), item);
+      if (item.relativePath) {
+        lookup!.set(item.relativePath.toLowerCase(), item);
       }
-      // Immediately notify the UI so files appear without waiting on disk persistence
-      if (onProgress) {
-        onProgress(validBatch, collected.length);
-      }
-      await saveMediaFilesBatch(validBatch);
     }
+    // Immediately display all found files in catalog
+    if (onProgress) {
+      onProgress(validBatch, collected.length);
+    }
+    await saveMediaFilesBatch(validBatch);
   }
 
   // Recurse subdirectories and stream files with continuous progress
@@ -742,42 +728,38 @@ export async function pickFilesAndIngest(
       }
 
       const collected: MediaFile[] = [];
-      const CHUNK_SIZE = 20;
-      for (let i = 0; i < handles.length; i += CHUNK_SIZE) {
-        const chunk = handles.slice(i, i + CHUNK_SIZE);
-        const resolved = await Promise.all(
-          chunk.map(async (handle) => {
-            try {
-              const file = await handle.getFile();
-              const matched = existingByName.get(handle.name.toLowerCase());
-              const fileId = matched ? matched.id : generateUUID();
+      const resolved = await Promise.all(
+        handles.map(async (handle) => {
+          try {
+            const file = await handle.getFile();
+            const matched = existingByName.get(handle.name.toLowerCase());
+            const fileId = matched ? matched.id : generateUUID();
 
-              registerMemoryFile(fileId, file, handle);
-              return {
-                id: fileId,
-                name: handle.name,
-                mimeType: file.type || getMimeFromFilename(handle.name),
-                size: file.size,
-                lastModified: file.lastModified,
-                handle: handle,
-                blobFallback: file,
-                createdAt: matched ? matched.createdAt : Date.now(),
-              } as MediaFile;
-            } catch (err) {
-              console.warn(`Could not read file ${handle.name}:`, err);
-              return null;
-            }
-          })
-        );
-
-        const valid = resolved.filter((r): r is MediaFile => r !== null);
-        if (valid.length > 0) {
-          collected.push(...valid);
-          if (onProgress) {
-            onProgress(valid, collected.length);
+            registerMemoryFile(fileId, file, handle);
+            return {
+              id: fileId,
+              name: handle.name,
+              mimeType: file.type || getMimeFromFilename(handle.name),
+              size: file.size,
+              lastModified: file.lastModified,
+              handle: handle,
+              blobFallback: file,
+              createdAt: matched ? matched.createdAt : Date.now(),
+            } as MediaFile;
+          } catch (err) {
+            console.warn(`Could not read file ${handle.name}:`, err);
+            return null;
           }
-          await saveMediaFilesBatch(valid);
+        })
+      );
+
+      const valid = resolved.filter((r): r is MediaFile => r !== null);
+      if (valid.length > 0) {
+        collected.push(...valid);
+        if (onProgress) {
+          onProgress(valid, collected.length);
         }
+        await saveMediaFilesBatch(valid);
       }
 
       return {
