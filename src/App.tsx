@@ -63,15 +63,50 @@ export default function App() {
         setIsExternalActive(true);
       } else if (msg.type === 'PLAYER_DISCONNECTED' && msg.payload?.isPopout) {
         setIsExternalActive(false);
+        // Automatically switch to split view so the video player is visible and mounted
+        setViewMode('split');
+        const state = getActivePlaybackState();
+        const targetTrackId = msg.payload?.trackId || state.trackId || activeTrackId;
+        const resumeTime = msg.payload?.currentTime ?? state.lastTime ?? state.currentTime ?? 0;
+        if (targetTrackId) {
+          saveActivePlaybackState({ trackId: targetTrackId, isPlaying: true, lastTime: resumeTime });
+          setTimeout(() => {
+            syncChannel.post({
+              type: 'LOAD_TRACK',
+              payload: {
+                trackId: targetTrackId,
+                autoPlay: true,
+                currentTime: resumeTime,
+              },
+            });
+          }, 80);
+        }
       } else if (msg.type === 'BRING_PLAYBACK_HERE') {
         setIsExternalActive(false);
+        setViewMode('split');
+        const state = getActivePlaybackState();
+        const targetTrackId = state.trackId || activeTrackId;
+        const resumeTime = state.lastTime || state.currentTime || 0;
+        if (targetTrackId) {
+          saveActivePlaybackState({ trackId: targetTrackId, isPlaying: true, lastTime: resumeTime });
+          setTimeout(() => {
+            syncChannel.post({
+              type: 'LOAD_TRACK',
+              payload: {
+                trackId: targetTrackId,
+                autoPlay: true,
+                currentTime: resumeTime,
+              },
+            });
+          }, 80);
+        }
       }
     });
 
     return () => {
       unsub();
     };
-  }, []);
+  }, [activeTrackId]);
 
   const handleOpenPopout = (trackIdToOpen?: string) => {
     const targetId = trackIdToOpen || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__;
@@ -81,7 +116,11 @@ export default function App() {
       saveActivePlaybackState({ trackId: targetId, isPlaying: true, lastTime: curTime });
       syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: targetId, autoPlay: true, currentTime: curTime } });
     }
-    syncChannel.openPopoutWindow(targetId, curTime);
+    const res = syncChannel.openPopoutWindow(targetId, curTime);
+    if (res.win) {
+      syncChannel.registerPopoutWindow(res.win);
+    }
+    setIsExternalActive(true);
   };
 
   const handleCopyPlayerUrl = () => {
@@ -109,6 +148,7 @@ export default function App() {
               }`}
             >
               <ControllerView
+                onOpenPlayerInNewTab={handleOpenPopout}
                 onToggleSplitMode={() =>
                   setViewMode(viewMode === 'split' ? 'controller' : 'split')
                 }

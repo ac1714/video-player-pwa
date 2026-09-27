@@ -61,19 +61,32 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isExternalActiveRef = useRef<boolean>(isExternalActive);
+  const prevIsExternalRef = useRef<boolean>(isExternalActive);
   const currentTrackRef = useRef<MediaFile | null>(null);
   const lastLoadedTrackIdRef = useRef<string | null>(null);
   const isLoadingTrackRef = useRef<boolean>(false);
   const hasMountedRef = useRef<boolean>(false);
   const handlePlayPrevRef = useRef<() => void>(() => {});
   const handlePlayNextRef = useRef<() => void>(() => {});
+  const loadTrackByIdRef = useRef<(trackId: string, autoPlay?: boolean, directBlob?: Blob, startTime?: number) => void>(() => {});
 
   useEffect(() => {
+    const wasExternal = prevIsExternalRef.current;
+    prevIsExternalRef.current = isExternalActive;
     isExternalActiveRef.current = isExternalActive;
+
     if (isExternalActive && videoRef.current && !videoRef.current.paused) {
       videoRef.current.pause();
+    } else if (wasExternal && !isExternalActive && embedded) {
+      // Pop-out tab closed: automatically resume playback in this window
+      const state = getActivePlaybackState();
+      const targetTrackId = state.trackId || currentTrackRef.current?.id;
+      const resumeTime = state.lastTime ?? state.currentTime ?? 0;
+      if (targetTrackId) {
+        loadTrackByIdRef.current(targetTrackId, true, undefined, resumeTime);
+      }
     }
-  }, [isExternalActive]);
+  }, [isExternalActive, embedded]);
 
   // Viewport Fit mode: contain (fit uncropped), cover (fill edge-to-edge), fill (stretch)
   const [fitMode, setFitMode] = useState<'contain' | 'cover' | 'fill'>(() => {
@@ -124,7 +137,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
 
   // Permission recovery state
   const [needsPermission, setNeedsPermission] = useState<boolean>(false);
-  const [pendingTrack, setPendingTrack] = useState<{ trackId: string; autoPlay?: boolean } | null>(null);
+  const [pendingTrack, setPendingTrack] = useState<{ trackId: string; autoPlay?: boolean; startTime?: number } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const relinkInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -202,10 +215,17 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
 
   // Play Media Blob directly
   const playMediaBlob = useCallback(
-    (fileRecord: MediaFile, mediaBlob: Blob, autoPlay: boolean = true) => {
+    (fileRecord: MediaFile, mediaBlob: Blob, autoPlay: boolean = true, startTime?: number) => {
       setErrorMessage(null);
       setNeedsPermission(false);
       setPendingTrack(null);
+
+      const targetTime =
+        startTime !== undefined && startTime >= 0
+          ? startTime
+          : getActivePlaybackState().trackId === fileRecord.id
+          ? getActivePlaybackState().lastTime || getActivePlaybackState().currentTime || 0
+          : 0;
 
       // If this exact track is already loaded in the video element, do NOT recreate URL or reset currentTime to 0!
       if (
@@ -215,8 +235,22 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         videoRef.current.src !== window.location.href &&
         !videoRef.current.ended
       ) {
+        if (targetTime > 0 && videoRef.current) {
+          try {
+            videoRef.current.currentTime = targetTime;
+            setCurrentTime(targetTime);
+          } catch {}
+        }
         if (autoPlay && videoRef.current.paused) {
-          videoRef.current.play().catch(() => {});
+          const p = videoRef.current.play();
+          if (p !== undefined) {
+            p.catch(() => {
+              if (videoRef.current) {
+                videoRef.current.muted = true;
+                videoRef.current.play().catch(() => {});
+              }
+            });
+          }
         }
         return;
       }
@@ -237,7 +271,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         payload: {
           trackId: fileRecord.id,
           state: autoPlay ? 'playing' : 'paused',
-          currentTime: 0,
+          currentTime: targetTime,
           duration: 0,
           volume,
           muted: isMuted,
@@ -249,31 +283,46 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         videoRef.current.src = blobUrl;
         videoRef.current.load();
 
-        if (autoPlay) {
-          const playPromise = videoRef.current.play();
-          if (playPromise !== undefined) {
-            playPromise
-              .then(() => {
-                setIsPlaying(true);
-                syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing' } });
-              })
-              .catch((playErr) => {
-                console.warn('Autoplay prevented, attempting muted fallback:', playErr);
-                if (videoRef.current) {
-                  videoRef.current.muted = true;
-                  videoRef.current
-                    .play()
-                    .then(() => {
-                      setIsPlaying(true);
-                      syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing' } });
-                    })
-                    .catch(() => {
-                      setIsPlaying(false);
-                      syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'paused' } });
-                    });
-                }
-              });
+        const seekAndPlay = () => {
+          if (!videoRef.current) return;
+          if (targetTime > 0) {
+            try {
+              videoRef.current.currentTime = targetTime;
+              setCurrentTime(targetTime);
+            } catch {}
           }
+          if (autoPlay) {
+            const playPromise = videoRef.current.play();
+            if (playPromise !== undefined) {
+              playPromise
+                .then(() => {
+                  setIsPlaying(true);
+                  syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing' } });
+                })
+                .catch((playErr) => {
+                  console.warn('Autoplay prevented, attempting muted fallback:', playErr);
+                  if (videoRef.current) {
+                    videoRef.current.muted = true;
+                    videoRef.current
+                      .play()
+                      .then(() => {
+                        setIsPlaying(true);
+                        syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing' } });
+                      })
+                      .catch(() => {
+                        setIsPlaying(false);
+                        syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'paused' } });
+                      });
+                  }
+                });
+            }
+          }
+        };
+
+        if (videoRef.current.readyState >= 1) {
+          seekAndPlay();
+        } else {
+          videoRef.current.addEventListener('loadedmetadata', seekAndPlay, { once: true });
         }
       }
     },
@@ -282,7 +331,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
 
   // Load track by ID from IndexedDB or memory
   const loadTrackById = useCallback(
-    async (trackId: string, autoPlay: boolean = true, directBlob?: Blob) => {
+    async (trackId: string, autoPlay: boolean = true, directBlob?: Blob, startTime?: number) => {
       // 1. If this exact track is already loaded in the video element, do NOT reload or restart
       if (
         (currentTrackRef.current?.id === trackId || lastLoadedTrackIdRef.current === trackId) &&
@@ -290,8 +339,22 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         videoRef.current.src !== '' &&
         videoRef.current.src !== window.location.href
       ) {
+        if (startTime !== undefined && startTime >= 0 && videoRef.current) {
+          try {
+            videoRef.current.currentTime = startTime;
+            setCurrentTime(startTime);
+          } catch {}
+        }
         if (autoPlay && videoRef.current.paused) {
-          videoRef.current.play().catch(() => {});
+          const p = videoRef.current.play();
+          if (p !== undefined) {
+            p.catch(() => {
+              if (videoRef.current) {
+                videoRef.current.muted = true;
+                videoRef.current.play().catch(() => {});
+              }
+            });
+          }
         }
         return;
       }
@@ -392,19 +455,34 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
             videoRef.current.src !== '' &&
             videoRef.current.src !== window.location.href
           ) {
+            if (startTime !== undefined && startTime >= 0 && videoRef.current) {
+              try {
+                videoRef.current.currentTime = startTime;
+                setCurrentTime(startTime);
+              } catch {}
+            }
             if (autoPlay && videoRef.current.paused) {
-              videoRef.current.play().catch(() => {});
+              const p = videoRef.current.play();
+              if (p !== undefined) {
+                p.catch(() => {
+                  if (videoRef.current) {
+                    videoRef.current.muted = true;
+                    videoRef.current.play().catch(() => {});
+                  }
+                });
+              }
             }
             isLoadingTrackRef.current = false;
             return;
           }
 
-          playMediaBlob(fileRecord, mediaBlob, autoPlay);
+          playMediaBlob(fileRecord, mediaBlob, autoPlay, startTime);
           isLoadingTrackRef.current = false;
           return;
         }
 
         // 4. Request data from controller tab via BroadcastChannel & opener postMessage
+        setPendingTrack({ trackId, autoPlay, startTime });
         syncChannel.post({
           type: 'REQUEST_TRACK_DATA',
           payload: { trackId },
@@ -565,6 +643,10 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     },
     [playMediaBlob]
   );
+
+  useEffect(() => {
+    loadTrackByIdRef.current = loadTrackById;
+  }, [loadTrackById]);
 
   // Handle direct file input fallback for environments where directory picker is restricted
   const handleRelinkChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1030,15 +1112,22 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       let resolvedId = targetTrackId;
       if (!resolvedId) {
         try {
-          const allFiles = await getAllMediaFiles();
-          if (allFiles.length > 0) {
-            resolvedId = allFiles[0].id;
+          const state = getActivePlaybackState();
+          if (state.trackId) {
+            resolvedId = state.trackId;
+          } else {
+            const allFiles = await getAllMediaFiles();
+            if (allFiles.length > 0) {
+              resolvedId = allFiles[0].id;
+            }
           }
         } catch {}
       }
 
       if (resolvedId) {
-        loadTrackById(resolvedId, true);
+        const state = getActivePlaybackState();
+        const initialStart = (state.trackId === resolvedId) ? (state.lastTime || state.currentTime || 0) : 0;
+        loadTrackById(resolvedId, true, undefined, initialStart);
         syncChannel.post({
           type: 'REQUEST_TRACK_DATA',
           payload: { trackId: resolvedId },
@@ -1099,12 +1188,66 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       videoEl.addEventListener('leavepictureinpicture', handleLeavePiP);
     }
 
-    return () => {
-      syncChannel.post({ type: 'PLAYER_DISCONNECTED', payload: { isPopout: !embedded } });
+    // Capture popout tab closing and notify other window to automatically resume playback
+    const handlePopoutClosing = () => {
+      if (embedded) return;
+      const curVid = videoRef.current;
+      const targetTrack = currentTrackRef.current;
+      const cTime = curVid ? curVid.currentTime : 0;
+      const playing = curVid ? !curVid.paused : true;
+      const tId = targetTrack?.id || getActivePlaybackState().trackId;
+
+      if (tId) {
+        saveActivePlaybackState({
+          trackId: tId,
+          isPlaying: playing,
+          lastTime: cTime,
+        });
+      }
+
+      const disconnectPayload = {
+        isPopout: true,
+        trackId: tId,
+        currentTime: cTime,
+        autoResume: true,
+        isPlaying: playing,
+      };
+
+      try {
+        syncChannel.post({ type: 'PLAYER_DISCONNECTED', payload: disconnectPayload });
+      } catch {}
+
       if (typeof window !== 'undefined' && window.opener && !window.opener.closed) {
         try {
-          window.opener.postMessage({ type: 'PLAYER_DISCONNECTED', payload: { isPopout: !embedded } }, '*');
+          window.opener.postMessage({ type: 'PLAYER_DISCONNECTED', payload: disconnectPayload }, '*');
         } catch {}
+      }
+
+      try {
+        localStorage.setItem(
+          'pwa_popout_closed_event',
+          JSON.stringify({ ...disconnectPayload, ts: Date.now() })
+        );
+      } catch {}
+    };
+
+    if (!embedded && typeof window !== 'undefined') {
+      window.addEventListener('beforeunload', handlePopoutClosing);
+      window.addEventListener('pagehide', handlePopoutClosing);
+    }
+
+    return () => {
+      if (!embedded && typeof window !== 'undefined') {
+        window.removeEventListener('beforeunload', handlePopoutClosing);
+        window.removeEventListener('pagehide', handlePopoutClosing);
+        handlePopoutClosing();
+      } else {
+        syncChannel.post({ type: 'PLAYER_DISCONNECTED', payload: { isPopout: !embedded } });
+        if (typeof window !== 'undefined' && window.opener && !window.opener.closed) {
+          try {
+            window.opener.postMessage({ type: 'PLAYER_DISCONNECTED', payload: { isPopout: !embedded } }, '*');
+          } catch {}
+        }
       }
       if (videoEl) {
         videoEl.removeEventListener('enterpictureinpicture', handleEnterPiP);
@@ -1120,7 +1263,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       switch (msg.type) {
         case 'LOAD_TRACK':
           if (embedded && isExternalActiveRef.current) return;
-          loadTrackById(msg.payload.trackId, msg.payload.autoPlay ?? true, msg.payload.blob);
+          loadTrackById(msg.payload.trackId, msg.payload.autoPlay ?? true, msg.payload.blob, msg.payload.currentTime);
           break;
 
         case 'PROVIDE_TRACK_DATA': {
@@ -1155,7 +1298,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
 
             if (!isAlreadyLoaded) {
               if (!embedded || !isExternalActiveRef.current) {
-                playMediaBlob(fileRec, blob, pendingTrack?.autoPlay ?? true);
+                playMediaBlob(fileRec, blob, pendingTrack?.autoPlay ?? true, pendingTrack?.startTime);
               }
             }
           }
@@ -1231,8 +1374,21 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           } else {
             const state = getActivePlaybackState();
             const targetId = state.trackId || currentTrack?.id;
+            const resumeTime = state.lastTime || state.currentTime || 0;
             if (targetId) {
-              loadTrackById(targetId, true);
+              loadTrackById(targetId, true, undefined, resumeTime);
+            }
+          }
+          break;
+
+        case 'PLAYER_DISCONNECTED':
+          if (embedded && msg.payload?.isPopout) {
+            isExternalActiveRef.current = false;
+            const state = getActivePlaybackState();
+            const targetId = msg.payload.trackId || state.trackId || currentTrackRef.current?.id;
+            const resumeTime = msg.payload.currentTime ?? state.lastTime ?? state.currentTime ?? 0;
+            if (targetId) {
+              loadTrackById(targetId, true, undefined, resumeTime);
             }
           }
           break;

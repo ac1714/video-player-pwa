@@ -114,6 +114,10 @@ export type SyncMessage =
       payload?: {
         isPopout?: boolean;
         senderId?: string;
+        trackId?: string | null;
+        currentTime?: number;
+        autoResume?: boolean;
+        isPlaying?: boolean;
       };
     }
   | {
@@ -172,5 +176,7 @@ export interface ActivePlaybackState {
   volume: number;
   muted: boolean;
   lastTime: number;
+  currentTime?: number;
+  isPlaying?: boolean;
   loop?: boolean;
 }

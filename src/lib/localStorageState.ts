@@ -14,6 +14,7 @@ const STORAGE_KEYS = {
   LAST_TIME: 'pwa_video_last_time',
   AUTOPLAY: 'pwa_video_autoplay',
   LOOP: 'pwa_video_loop',
+  PLAYING: 'pwa_video_is_playing',
 };
 
 export function getActivePlaybackState(): ActivePlaybackState {
@@ -25,6 +26,8 @@ export function getActivePlaybackState(): ActivePlaybackState {
       volume: 1,
       muted: false,
       lastTime: 0,
+      currentTime: 0,
+      isPlaying: false,
       loop: false,
     };
   }
@@ -36,6 +39,8 @@ export function getActivePlaybackState(): ActivePlaybackState {
   const mutedStr = localStorage.getItem(STORAGE_KEYS.MUTED);
   const lastTimeStr = localStorage.getItem(STORAGE_KEYS.LAST_TIME);
   const loopStr = localStorage.getItem(STORAGE_KEYS.LOOP);
+  const isPlayingStr = localStorage.getItem(STORAGE_KEYS.PLAYING);
+  const parsedTime = lastTimeStr ? parseFloat(lastTimeStr) : 0;
 
   return {
     playlistId: playlistId || null,
@@ -43,7 +48,9 @@ export function getActivePlaybackState(): ActivePlaybackState {
     trackIndex: trackIndexStr ? parseInt(trackIndexStr, 10) : 0,
     volume: volumeStr !== null ? parseFloat(volumeStr) : 1.0,
     muted: mutedStr === 'true',
-    lastTime: lastTimeStr ? parseFloat(lastTimeStr) : 0,
+    lastTime: parsedTime,
+    currentTime: parsedTime,
+    isPlaying: isPlayingStr === 'true',
     loop: loopStr === 'true',
   };
 }
@@ -114,6 +121,12 @@ export function saveActivePlaybackState(state: Partial<ActivePlaybackState> & { 
   }
   if (state.lastTime !== undefined) {
     setLastPlaybackTime(state.lastTime);
+  }
+  if (state.currentTime !== undefined && state.lastTime === undefined) {
+    setLastPlaybackTime(state.currentTime);
+  }
+  if (state.isPlaying !== undefined) {
+    localStorage.setItem(STORAGE_KEYS.PLAYING, state.isPlaying ? 'true' : 'false');
   }
   if (state.loop !== undefined) {
     setLoopSetting(state.loop);

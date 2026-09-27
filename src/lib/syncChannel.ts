@@ -5,7 +5,7 @@
 
 import { SyncMessage } from '../types';
 import { getMemoryFile } from './db';
-import { saveActivePlaybackState } from './localStorageState';
+import { saveActivePlaybackState, getActivePlaybackState } from './localStorageState';
 
 const CHANNEL_NAME = 'pwa_video_sync_channel';
 
@@ -46,6 +46,7 @@ class SyncChannelManager {
   private channel: BroadcastChannel | null = null;
   private listeners: Set<MessageListener> = new Set();
   private popoutWin: Window | null = null;
+  private popoutCheckInterval: any = null;
 
   constructor() {
     // 1. Initialize BroadcastChannel if supported
@@ -110,6 +111,32 @@ class SyncChannelManager {
 
   public registerPopoutWindow(win: Window | null): void {
     this.popoutWin = win;
+    if (this.popoutCheckInterval) {
+      clearInterval(this.popoutCheckInterval);
+      this.popoutCheckInterval = null;
+    }
+    if (win) {
+      this.popoutCheckInterval = setInterval(() => {
+        if (this.popoutWin && this.popoutWin.closed) {
+          this.popoutWin = null;
+          clearInterval(this.popoutCheckInterval);
+          this.popoutCheckInterval = null;
+
+          const state = getActivePlaybackState();
+          const disconnectMsg: SyncMessage = {
+            type: 'PLAYER_DISCONNECTED',
+            payload: {
+              isPopout: true,
+              trackId: state.trackId,
+              currentTime: state.lastTime || state.currentTime || 0,
+              autoResume: true,
+              isPlaying: state.isPlaying ?? true,
+            },
+          };
+          this.post(disconnectMsg);
+        }
+      }, 350);
+    }
   }
 
   public getPopoutWindow(): Window | null {
@@ -185,14 +212,14 @@ class SyncChannelManager {
     }
 
     if (win) {
-      this.popoutWin = win;
+      this.registerPopoutWindow(win);
       try { win.focus(); } catch {}
 
       if (trackId) {
         setTimeout(() => {
           this.post({
             type: 'LOAD_TRACK',
-            payload: { trackId, autoPlay: true, blob },
+            payload: { trackId, autoPlay: true, blob, currentTime },
           });
         }, 300);
       }
