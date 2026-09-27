@@ -11,6 +11,7 @@ export interface MediaFile {
   lastModified: number;
   handle?: FileSystemFileHandle;
   blobFallback?: Blob;
+  duration?: number;
   createdAt: number;
 }
 
@@ -79,6 +80,7 @@ export type SyncMessage =
       payload: {
         currentTime: number;
         duration: number;
+        trackId?: string;
       };
     }
   | {

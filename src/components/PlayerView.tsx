@@ -1489,6 +1489,46 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     };
   }, [loadTrackById, playMediaBlob, embedded]);
 
+  const handleDurationUpdate = (dur: number) => {
+    if (!dur || isNaN(dur) || !isFinite(dur) || dur <= 0) return;
+    setDuration(dur);
+    const activeTrack = currentTrackRef.current;
+    if (!activeTrack) return;
+
+    if (activeTrack.duration !== dur) {
+      activeTrack.duration = dur;
+      try {
+        localStorage.setItem(`pwa_video_duration_${activeTrack.id}`, String(dur));
+      } catch {}
+      getMediaFile(activeTrack.id).then((record) => {
+        if (record && record.duration !== dur) {
+          record.duration = dur;
+          saveMediaFile(record);
+        }
+      });
+      syncChannel.post({
+        type: 'TIME_UPDATE',
+        payload: {
+          trackId: activeTrack.id,
+          currentTime: videoRef.current?.currentTime || 0,
+          duration: dur,
+        },
+      });
+    }
+  };
+
+  const onLoadedMetadata = () => {
+    if (videoRef.current) {
+      handleDurationUpdate(videoRef.current.duration);
+    }
+  };
+
+  const onDurationChange = () => {
+    if (videoRef.current) {
+      handleDurationUpdate(videoRef.current.duration);
+    }
+  };
+
   // Video HTML5 event bindings
   const onTimeUpdate = () => {
     if (embedded && isExternalActiveRef.current) return;
@@ -1497,6 +1537,9 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     const dur = videoRef.current.duration || 0;
     setCurrentTime(cur);
     setDuration(dur);
+    if (dur > 0 && currentTrackRef.current && currentTrackRef.current.duration !== dur) {
+      handleDurationUpdate(dur);
+    }
 
     const now = performance.now();
     if (now - lastTimeSentRef.current > 250) {
@@ -1504,6 +1547,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       syncChannel.post({
         type: 'TIME_UPDATE',
         payload: {
+          trackId: currentTrackRef.current?.id,
           currentTime: cur,
           duration: dur,
         },
@@ -1639,6 +1683,8 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         id="pwa-main-video-element"
         playsInline
         loop={isLooping}
+        onLoadedMetadata={onLoadedMetadata}
+        onDurationChange={onDurationChange}
         onTimeUpdate={onTimeUpdate}
         onPlay={onPlay}
         onPause={onPause}

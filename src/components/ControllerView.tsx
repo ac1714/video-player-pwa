@@ -1,7 +1,7 @@
 /**
  * Controller Page Component (controller.html)
  * 
- * - Library & Folder Manager (Directory Picker, File Picker, Sample Clip Generator, File Inspector)
+ * - Library & Folder Manager (Directory Picker, File Picker, Playlist Manager)
  * - Playlist Hub (Create, Rename, Delete, Reorder track sequence)
  * - Remote Control Bar with Picture-in-Picture controls, transport controls, and scrub bar
  * - Light / Pitch-Black Dark middle toggle with zero blue tinting
@@ -72,6 +72,7 @@ import {
   saveDirectoryHandle,
   retrieveBinaryBlob,
   persistBinaryBlob,
+  saveMediaFile,
 } from '../lib/db';
 import { syncChannel, getPopoutUrl } from '../lib/syncChannel';
 import {
@@ -84,6 +85,7 @@ import {
   pickFilesToRelink,
   relinkFilesFromList,
   isInsideIframe,
+  extractVideoDuration,
 } from '../lib/fileIngestion';
 import {
   getActivePlaybackState,
@@ -196,10 +198,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   useEffect(() => {
     mediaFilesRef.current = mediaFiles;
   }, [mediaFiles]);
-
-  // Inspector modal state (many-to-many playlist association)
-  const [inspectingFile, setInspectingFile] = useState<MediaFile | null>(null);
-  const [filePlaylistIds, setFilePlaylistIds] = useState<string[]>([]);
 
   // Playlist management UI states
   const [showCreateModal, setShowCreateModal] = useState<boolean>(false);
@@ -370,6 +368,41 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         files = files.filter((f) => !isSampleClip(f.name));
       }
 
+      // Hydrate duration from localStorage cache if not in IndexedDB record
+      files = files.map((f) => {
+        if (!f.duration) {
+          try {
+            const cached = localStorage.getItem(`pwa_video_duration_${f.id}`);
+            if (cached) {
+              const parsed = parseFloat(cached);
+              if (parsed > 0) return { ...f, duration: parsed };
+            }
+          } catch {}
+        }
+        return f;
+      });
+
+      // Background extract duration for memory files that are still missing duration
+      for (const f of files) {
+        if (!f.duration) {
+          const mem = getMemoryFile(f.id);
+          const blob = mem?.file || f.blobFallback;
+          if (blob) {
+            extractVideoDuration(blob).then((dur) => {
+              if (dur > 0) {
+                try {
+                  localStorage.setItem(`pwa_video_duration_${f.id}`, String(dur));
+                } catch {}
+                setMediaFiles((prev) =>
+                  prev.map((item) => (item.id === f.id ? { ...item, duration: dur } : item))
+                );
+                saveMediaFile({ ...f, duration: dur }).catch(() => {});
+              }
+            });
+          }
+        }
+      }
+
       setMediaFiles(files);
       setPlaylists(lists);
 
@@ -516,8 +549,24 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
           if (msg.payload.currentTime !== undefined && !isScrubbingRef.current) {
             setCurrentTime(msg.payload.currentTime);
           }
-          if (msg.payload.duration !== undefined) {
+          if (msg.payload.duration !== undefined && msg.payload.duration > 0) {
             setDuration(msg.payload.duration);
+            const targetId = msg.payload.trackId || activeTrackIdRef.current;
+            if (targetId) {
+              try {
+                localStorage.setItem(`pwa_video_duration_${targetId}`, String(msg.payload.duration));
+              } catch {}
+              setMediaFiles((prev) =>
+                prev.map((f) => {
+                  if (f.id === targetId && f.duration !== msg.payload.duration) {
+                    const updated = { ...f, duration: msg.payload.duration };
+                    saveMediaFile(updated).catch(() => {});
+                    return updated;
+                  }
+                  return f;
+                })
+              );
+            }
           }
           if (msg.payload.volume !== undefined) {
             setVolume(msg.payload.volume);
@@ -538,7 +587,25 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
           if (!isScrubbingRef.current) {
             setCurrentTime(msg.payload.currentTime);
           }
-          setDuration(msg.payload.duration);
+          if (msg.payload.duration > 0) {
+            setDuration(msg.payload.duration);
+            const targetId = msg.payload.trackId || activeTrackIdRef.current;
+            if (targetId) {
+              try {
+                localStorage.setItem(`pwa_video_duration_${targetId}`, String(msg.payload.duration));
+              } catch {}
+              setMediaFiles((prev) =>
+                prev.map((f) => {
+                  if (f.id === targetId && f.duration !== msg.payload.duration) {
+                    const updated = { ...f, duration: msg.payload.duration };
+                    saveMediaFile(updated).catch(() => {});
+                    return updated;
+                  }
+                  return f;
+                })
+              );
+            }
+          }
           break;
 
         case 'SET_VOLUME':
@@ -1216,26 +1283,22 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   };
 
 
-  // Inspector Dialog
-  const openInspector = async (file: MediaFile) => {
-    setInspectingFile(file);
-    const assignedIds = await getPlaylistsForFile(file.id);
-    setFilePlaylistIds(assignedIds);
-  };
+  // Toggle track membership in a playlist
+  const toggleTrackInPlaylist = async (fileId: string, playlistId: string) => {
+    const pl = playlists.find((p) => p.id === playlistId);
+    if (!pl) return;
+    const isIncluded = pl.fileIds.includes(fileId);
+    const file = mediaFiles.find((f) => f.id === fileId);
+    const fileName = file ? `"${file.name}"` : 'track';
 
-  const toggleFilePlaylist = async (playlistId: string) => {
-    if (!inspectingFile) return;
-    const isAssigned = filePlaylistIds.includes(playlistId);
-
-    if (isAssigned) {
-      await removeFileFromPlaylist(inspectingFile.id, playlistId);
-      setFilePlaylistIds((prev) => prev.filter((id) => id !== playlistId));
+    if (isIncluded) {
+      await removeFileFromPlaylist(fileId, playlistId);
+      setStatusNotice(`Removed ${fileName} from "${pl.name}"`);
     } else {
-      await addFileToPlaylist(inspectingFile.id, playlistId);
-      setFilePlaylistIds((prev) => [...prev, playlistId]);
+      await addFileToPlaylist(fileId, playlistId);
+      setStatusNotice(`Added ${fileName} to "${pl.name}"!`);
     }
-    const updatedPlaylists = await getAllPlaylists();
-    setPlaylists(updatedPlaylists);
+    await loadDatabase();
     syncChannel.post({ type: 'PLAYLIST_MODIFIED', payload: { playlistId } });
   };
 
@@ -1779,6 +1842,12 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                             {file.name}
                           </p>
                           <div className="flex items-center gap-2 text-[11px] text-neutral-500 dark:text-neutral-400 font-sans font-medium tabular-nums mt-0.5">
+                            {file.duration && file.duration > 0 ? (
+                              <>
+                                <span className="font-semibold text-neutral-800 dark:text-neutral-200">{formatTime(file.duration)}</span>
+                                <span>•</span>
+                              </>
+                            ) : null}
                             <span>{(file.size / (1024 * 1024)).toFixed(1)} MB</span>
                             <span>•</span>
                             <span className="uppercase">{file.mimeType.replace('video/', '')}</span>
@@ -1862,15 +1931,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                         >
                           <ExternalLink className="w-3.5 h-3.5" />
                         </a>
-
-                        {/* Inspector */}
-                        <button
-                          onClick={() => openInspector(file)}
-                          className="p-1.5 text-neutral-500 hover:text-neutral-900 dark:hover:text-white rounded-lg border border-neutral-200 dark:border-neutral-800 transition cursor-pointer"
-                          title="Video file details & playlists"
-                        >
-                          <Info className="w-3.5 h-3.5" />
-                        </button>
 
                         {/* Delete */}
                         <button
@@ -2245,6 +2305,14 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                               {file.name}
                             </p>
                             <div className="flex items-center gap-2 text-[11px] font-sans font-medium tabular-nums text-neutral-400">
+                              {file.duration && file.duration > 0 ? (
+                                <>
+                                  <span className="font-semibold text-neutral-700 dark:text-neutral-300">
+                                    {formatTime(file.duration)}
+                                  </span>
+                                  <span>•</span>
+                                </>
+                              ) : null}
                               <span>{(file.size / (1024 * 1024)).toFixed(1)} MB</span>
                               {isPlayingThis && (
                                 <>
@@ -2521,63 +2589,64 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         </div>
       </footer>
 
-      {/* INSPECTOR MODAL */}
-      {inspectingFile && (
+      {/* ADD FILE TO PLAYLIST MODAL */}
+      {fileToAddToPlaylist && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div
-            id="file-inspector-modal"
-            className="w-full max-w-sm rounded-xl bg-white dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 p-5 shadow-2xl text-neutral-900 dark:text-neutral-100 space-y-4"
+            id="add-to-playlist-modal"
+            className="w-full max-w-sm rounded-xl bg-white dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 p-5 shadow-2xl text-neutral-900 dark:text-neutral-100 space-y-4 animate-in fade-in duration-150"
           >
             <div className="flex items-start justify-between">
-              <h3 className="text-sm font-bold truncate max-w-[260px]">{inspectingFile.name}</h3>
+              <div className="min-w-0 pr-2">
+                <h3 className="text-sm font-bold flex items-center gap-1.5 text-neutral-900 dark:text-neutral-100">
+                  <FolderHeart className="w-4 h-4 text-amber-500 shrink-0" />
+                  <span>Add to Playlist</span>
+                </h3>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400 truncate max-w-[240px] mt-0.5" title={fileToAddToPlaylist.name}>
+                  {fileToAddToPlaylist.name}
+                </p>
+              </div>
               <button
-                onClick={() => setInspectingFile(null)}
-                className="p-1 text-neutral-400 hover:text-neutral-900 dark:hover:text-white"
+                onClick={() => setFileToAddToPlaylist(null)}
+                className="p-1 text-neutral-400 hover:text-neutral-900 dark:hover:text-white transition cursor-pointer"
+                title="Close"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="p-2.5 rounded-lg bg-neutral-100 dark:bg-neutral-900 text-xs font-sans space-y-1 text-neutral-600 dark:text-neutral-400">
-              <div className="flex justify-between">
-                <span>Size:</span>
-                <span className="text-neutral-900 dark:text-neutral-200">
-                  {(inspectingFile.size / (1024 * 1024)).toFixed(2)} MB
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Type:</span>
-                <span className="text-neutral-900 dark:text-neutral-200">{inspectingFile.mimeType}</span>
-              </div>
-            </div>
-
+            {/* List of existing playlists */}
             <div className="space-y-1.5">
               <span className="text-xs font-bold uppercase tracking-wider text-neutral-500">Playlists</span>
               {playlists.length === 0 ? (
-                <div className="py-3 text-center text-xs text-neutral-400">No playlists created yet.</div>
+                <div className="py-4 text-center text-xs text-neutral-400 bg-neutral-50 dark:bg-neutral-900/50 rounded-lg border border-dashed border-neutral-200 dark:border-neutral-800">
+                  No playlists created yet. Create one below to add this track!
+                </div>
               ) : (
-                <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+                <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
                   {playlists.map((pl) => {
-                    const checked = filePlaylistIds.includes(pl.id);
+                    const isIncluded = pl.fileIds.includes(fileToAddToPlaylist.id);
                     return (
                       <div
-                        key={`rel-${pl.id}`}
-                        onClick={() => toggleFilePlaylist(pl.id)}
-                        className={`flex items-center justify-between p-2 rounded-lg border cursor-pointer text-xs transition ${
-                          checked
-                            ? 'bg-neutral-100 dark:bg-neutral-900 border-neutral-300 dark:border-neutral-700 font-medium'
-                            : 'border-neutral-200 dark:border-neutral-800 text-neutral-600 dark:text-neutral-400'
+                        key={`add-pl-${pl.id}`}
+                        onClick={() => toggleTrackInPlaylist(fileToAddToPlaylist.id, pl.id)}
+                        className={`flex items-center justify-between p-2.5 rounded-lg border cursor-pointer text-xs transition active:scale-95 ${
+                          isIncluded
+                            ? 'bg-amber-500/10 dark:bg-amber-500/20 border-amber-500/50 text-amber-900 dark:text-amber-200 font-medium'
+                            : 'border-neutral-200 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-900 text-neutral-700 dark:text-neutral-300'
                         }`}
                       >
-                        <div className="flex items-center gap-2">
-                          {checked ? (
-                            <CheckSquare className="w-4 h-4 text-neutral-900 dark:text-white shrink-0" />
+                        <div className="flex items-center gap-2 min-w-0 pr-2">
+                          {isIncluded ? (
+                            <CheckSquare className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
                           ) : (
                             <Square className="w-4 h-4 text-neutral-400 shrink-0" />
                           )}
-                          <span>{pl.name}</span>
+                          <span className="truncate">{pl.name}</span>
                         </div>
-                        <span className="text-[10px] font-sans font-medium tabular-nums text-neutral-400">{pl.fileIds.length} tracks</span>
+                        <span className="text-[10px] font-sans font-medium tabular-nums text-neutral-400 shrink-0">
+                          {pl.fileIds.length} {pl.fileIds.length === 1 ? 'track' : 'tracks'}
+                        </span>
                       </div>
                     );
                   })}
@@ -2585,24 +2654,126 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
               )}
             </div>
 
-            <div className="pt-2 flex items-center justify-between">
+            {/* Quick create and add inline form */}
+            <div className="pt-2 border-t border-neutral-200 dark:border-neutral-800 space-y-2">
+              <span className="text-[11px] font-semibold text-neutral-500">Create new playlist:</span>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="text"
+                  placeholder="New playlist name..."
+                  value={newPlaylistName}
+                  onChange={(e) => setNewPlaylistName(e.target.value)}
+                  onKeyDown={async (e) => {
+                    if (e.key === 'Enter' && newPlaylistName.trim()) {
+                      const pl = await createPlaylist(newPlaylistName.trim());
+                      await addFileToPlaylist(fileToAddToPlaylist.id, pl.id);
+                      setNewPlaylistName('');
+                      await loadDatabase();
+                      setStatusNotice(`Created playlist "${pl.name}" with this video!`);
+                      syncChannel.post({ type: 'PLAYLIST_MODIFIED', payload: { playlistId: pl.id } });
+                    }
+                  }}
+                  className="flex-1 px-2.5 py-1.5 text-xs rounded-lg bg-neutral-100 dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 outline-none text-neutral-900 dark:text-neutral-100"
+                />
+                <button
+                  onClick={async () => {
+                    if (!newPlaylistName.trim()) return;
+                    const pl = await createPlaylist(newPlaylistName.trim());
+                    await addFileToPlaylist(fileToAddToPlaylist.id, pl.id);
+                    setNewPlaylistName('');
+                    await loadDatabase();
+                    setStatusNotice(`Created playlist "${pl.name}" with this video!`);
+                    syncChannel.post({ type: 'PLAYLIST_MODIFIED', payload: { playlistId: pl.id } });
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-black text-xs font-semibold hover:opacity-90 transition cursor-pointer shrink-0"
+                >
+                  Create & Add
+                </button>
+              </div>
+            </div>
+
+            <div className="pt-2 flex justify-end">
               <button
-                onClick={() => {
-                  if (inspectingFile) {
-                    handleDeleteMediaFile(inspectingFile.id, inspectingFile.name);
-                    setInspectingFile(null);
-                  }
-                }}
-                className="px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
+                onClick={() => setFileToAddToPlaylist(null)}
+                className="px-4 py-1.5 rounded-lg bg-neutral-900 dark:bg-white hover:opacity-90 text-white dark:text-black text-xs font-semibold transition cursor-pointer"
               >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Remove from Library</span>
+                Done
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADD TRACKS TO PLAYLIST MODAL (from playlist card) */}
+      {showAddTracksToPlaylist && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div
+            id="add-tracks-to-playlist-modal"
+            className="w-full max-w-md rounded-xl bg-white dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 p-5 shadow-2xl text-neutral-900 dark:text-neutral-100 space-y-4 animate-in fade-in duration-150"
+          >
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-sm font-bold flex items-center gap-1.5 text-neutral-900 dark:text-neutral-100">
+                  <FolderHeart className="w-4 h-4 text-amber-500 shrink-0" />
+                  <span>Add Videos to "{showAddTracksToPlaylist.name}"</span>
+                </h3>
+                <p className="text-xs text-neutral-500 mt-0.5">
+                  Click any video from your library to add or remove it from this playlist
+                </p>
+              </div>
               <button
-                onClick={() => setInspectingFile(null)}
-                className="px-3.5 py-1.5 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-black text-xs font-semibold transition cursor-pointer"
+                onClick={() => setShowAddTracksToPlaylist(null)}
+                className="p-1 text-neutral-400 hover:text-neutral-900 dark:hover:text-white transition cursor-pointer"
+                title="Close"
               >
-                Close
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-1 max-h-64 overflow-y-auto pr-1">
+              {mediaFiles.length === 0 ? (
+                <div className="py-6 text-center text-xs text-neutral-400">
+                  No videos in your library yet. Import a video or folder first.
+                </div>
+              ) : (
+                mediaFiles.map((file) => {
+                  const currentPl = playlists.find((p) => p.id === showAddTracksToPlaylist.id) || showAddTracksToPlaylist;
+                  const isIncluded = currentPl.fileIds.includes(file.id);
+                  return (
+                    <div
+                      key={`batch-track-${file.id}`}
+                      onClick={() => toggleTrackInPlaylist(file.id, currentPl.id)}
+                      className={`flex items-center justify-between p-2 rounded-lg border cursor-pointer text-xs transition ${
+                        isIncluded
+                          ? 'bg-amber-500/10 dark:bg-amber-500/20 border-amber-500/50 text-amber-900 dark:text-amber-200 font-medium'
+                          : 'border-neutral-200 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-900 text-neutral-700 dark:text-neutral-300'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0 pr-2">
+                        {isIncluded ? (
+                          <CheckSquare className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                        ) : (
+                          <Square className="w-4 h-4 text-neutral-400 shrink-0" />
+                        )}
+                        <span className="truncate" title={file.name}>
+                          {file.name}
+                        </span>
+                      </div>
+                      <span className="text-[10px] font-sans font-medium tabular-nums text-neutral-400 shrink-0">
+                        {file.duration ? formatTime(file.duration) : `${(file.size / (1024 * 1024)).toFixed(1)} MB`}
+                      </span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                onClick={() => setShowAddTracksToPlaylist(null)}
+                className="px-4 py-1.5 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-black text-xs font-semibold hover:opacity-90 transition cursor-pointer"
+              >
+                Done
               </button>
             </div>
           </div>

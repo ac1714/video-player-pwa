@@ -6,11 +6,37 @@
  * 2. File System Access API showDirectoryPicker / showOpenFilePicker with automatic graceful fallback
  * 3. HTML5 Drag-and-drop recursive folder traversal via webkitGetAsEntry
  * 4. Storing File/Blob objects and FileSystemFileHandle in IndexedDB for seamless cross-tab playback
- * 5. Synthetic interactive test clip generator
  */
 
 import { MediaFile } from '../types';
-import { saveMediaFilesBatch, saveMediaFile, registerMemoryFile, getAllMediaFiles, saveDirectoryHandle } from './db';
+import { saveMediaFilesBatch, saveMediaFile, registerMemoryFile, getAllMediaFiles, saveDirectoryHandle, getMediaFile } from './db';
+
+export function extractVideoDuration(blob: Blob): Promise<number> {
+  return new Promise((resolve) => {
+    try {
+      if (typeof document === 'undefined') return resolve(0);
+      const video = document.createElement('video');
+      video.preload = 'metadata';
+      const url = URL.createObjectURL(blob);
+      video.src = url;
+      video.onloadedmetadata = () => {
+        const d = video.duration;
+        URL.revokeObjectURL(url);
+        resolve(!isNaN(d) && isFinite(d) && d > 0 ? d : 0);
+      };
+      video.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve(0);
+      };
+      setTimeout(() => {
+        try { URL.revokeObjectURL(url); } catch {}
+        resolve(0);
+      }, 3000);
+    } catch {
+      resolve(0);
+    }
+  });
+}
 
 const SUPPORTED_EXTENSIONS = [
   '.mp4',
@@ -124,6 +150,31 @@ export async function ingestFileList(
       const fileId = matchedExisting ? matchedExisting.id : generateUUID();
       registerMemoryFile(fileId, f);
 
+      const cachedDur = matchedExisting?.duration || (() => {
+        try {
+          const val = localStorage.getItem(`pwa_video_duration_${fileId}`);
+          return val ? parseFloat(val) : undefined;
+        } catch {
+          return undefined;
+        }
+      })();
+
+      if (!cachedDur) {
+        extractVideoDuration(f).then((dur) => {
+          if (dur > 0) {
+            try {
+              localStorage.setItem(`pwa_video_duration_${fileId}`, String(dur));
+            } catch {}
+            getMediaFile(fileId).then((dbRec) => {
+              if (dbRec && dbRec.duration !== dur) {
+                dbRec.duration = dur;
+                saveMediaFile(dbRec).catch(() => {});
+              }
+            });
+          }
+        });
+      }
+
       const record: MediaFile = {
         id: fileId,
         name: f.name,
@@ -131,6 +182,7 @@ export async function ingestFileList(
         mimeType: f.type || getMimeFromFilename(f.name),
         size: f.size,
         lastModified: f.lastModified,
+        duration: cachedDur,
         createdAt: matchedExisting ? matchedExisting.createdAt : Date.now(),
       };
 
