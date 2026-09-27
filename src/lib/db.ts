@@ -282,15 +282,24 @@ function putToStore(db: IDBDatabase, storeName: string, record: any): Promise<vo
   });
 }
 
+// Directory handles in-memory cache for instant permission query/request without DB delay
+const memoryDirectoryHandles = new Map<string, FileSystemDirectoryHandle>();
+
+export function getCachedDirectoryHandles(): FileSystemDirectoryHandle[] {
+  return Array.from(memoryDirectoryHandles.values());
+}
+
 // Save Directory Handle (supports authorizing whole directories at once)
 export async function saveDirectoryHandle(id: string, handle: FileSystemDirectoryHandle): Promise<void> {
+  const key = id || handle.name;
+  memoryDirectoryHandles.set(key, handle);
   const db = await getDB();
   try {
     if (db.objectStoreNames.contains(STORE_DIRECTORY_HANDLES)) {
       await putToStore(db, STORE_DIRECTORY_HANDLES, {
         name: handle.name,
         handle: handle,
-        id: id || handle.name,
+        id: key,
         updatedAt: Date.now(),
       });
     }
@@ -301,7 +310,7 @@ export async function saveDirectoryHandle(id: string, handle: FileSystemDirector
   try {
     // Also store in media_files with a distinct directory prefix for backward compatibility
     await putToStore(db, STORE_MEDIA_FILES, {
-      id: `__dir_${id || handle.name}`,
+      id: `__dir_${key}`,
       name: handle.name,
       mimeType: 'directory/handle',
       size: 0,
@@ -316,8 +325,9 @@ export async function saveDirectoryHandle(id: string, handle: FileSystemDirector
 
 export async function getAllDirectoryHandles(): Promise<FileSystemDirectoryHandle[]> {
   try {
+    const handleMap = new Map<string, FileSystemDirectoryHandle>(memoryDirectoryHandles);
+
     const db = await getDB();
-    const handleMap = new Map<string, FileSystemDirectoryHandle>();
 
     // 1. Check dedicated STORE_DIRECTORY_HANDLES
     if (db.objectStoreNames.contains(STORE_DIRECTORY_HANDLES)) {
@@ -334,33 +344,40 @@ export async function getAllDirectoryHandles(): Promise<FileSystemDirectoryHandl
       });
       for (const r of records) {
         if (r?.handle) {
-          handleMap.set(r.name || r.id, r.handle);
+          const k = r.name || r.id;
+          handleMap.set(k, r.handle);
+          memoryDirectoryHandles.set(k, r.handle);
         }
       }
     }
 
-    // 2. Check legacy __dir_ records in STORE_MEDIA_FILES
-    const mediaRecords = await new Promise<any[]>((resolve) => {
-      try {
-        const tx = db.transaction(STORE_MEDIA_FILES, 'readonly');
-        const store = tx.objectStore(STORE_MEDIA_FILES);
-        const req = store.getAll();
-        req.onsuccess = () => resolve(req.result || []);
-        req.onerror = () => resolve([]);
-      } catch {
-        resolve([]);
-      }
-    });
+    // 2. Check legacy __dir_ records in STORE_MEDIA_FILES only if no handles found in dedicated store
+    if (handleMap.size === 0 && db.objectStoreNames.contains(STORE_MEDIA_FILES)) {
+      const mediaRecords = await new Promise<any[]>((resolve) => {
+        try {
+          const tx = db.transaction(STORE_MEDIA_FILES, 'readonly');
+          const store = tx.objectStore(STORE_MEDIA_FILES);
+          const range = IDBKeyRange.bound('__dir_', '__dir_\uffff');
+          const req = store.getAll(range);
+          req.onsuccess = () => resolve(req.result || []);
+          req.onerror = () => resolve([]);
+        } catch {
+          resolve([]);
+        }
+      });
 
-    for (const r of mediaRecords) {
-      if (r?.id?.startsWith('__dir_') && r.dirHandle) {
-        handleMap.set(r.name || r.id, r.dirHandle);
+      for (const r of mediaRecords) {
+        if (r?.id?.startsWith('__dir_') && r.dirHandle) {
+          const k = r.name || r.id;
+          handleMap.set(k, r.dirHandle);
+          memoryDirectoryHandles.set(k, r.dirHandle);
+        }
       }
     }
 
     return Array.from(handleMap.values());
   } catch {
-    return [];
+    return Array.from(memoryDirectoryHandles.values());
   }
 }
 

@@ -81,6 +81,7 @@ import {
   ingestFileList,
   ingestDroppedItems,
   relinkFolderHandles,
+  resolveFileFromDirectory,
   pickFolderToRelink,
   pickFilesToRelink,
   relinkFilesFromList,
@@ -649,10 +650,11 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                 try {
                   const dirHandles = await getAllDirectoryHandles();
                   for (const dh of dirHandles) {
-                    await relinkFolderHandles(dh);
-                    const ref = getMemoryFile(reqTrackId);
-                    if (ref?.file) {
-                      blob = ref.file;
+                    const resolved = await resolveFileFromDirectory(dh, rec?.relativePath || '', rec?.name || '');
+                    if (resolved?.file) {
+                      blob = resolved.file;
+                      registerMemoryFile(reqTrackId, resolved.file, resolved.handle);
+                      relinkFolderHandles(dh).catch(() => {});
                       break;
                     }
                   }
@@ -765,14 +767,36 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
     setIsScrubbing(false);
     updatePipControlsState(startTime, initDur, autoPlay, targetFile?.name, isMuted);
 
-    if (!availableBlob) {
-      availableBlob = await retrieveBinaryBlob(trackId);
-      if (availableBlob && targetFile) {
-        targetFile.blobFallback = availableBlob;
+    // 1. Direct File Handle: check and elevate permission synchronously during active user click gesture
+    if (!availableBlob && targetFile?.handle) {
+      try {
+        const handle = targetFile.handle as any;
+        let perm = handle.queryPermission ? await handle.queryPermission({ mode: 'read' }) : 'granted';
+        if (perm !== 'granted' && handle.requestPermission) {
+          try {
+            perm = await handle.requestPermission({ mode: 'read' });
+          } catch (permErr) {
+            console.warn('Direct file handle requestPermission error:', permErr);
+          }
+        }
+        if (perm === 'granted' && handle.getFile) {
+          try {
+            availableBlob = await handle.getFile();
+            if (availableBlob && availableBlob.size > 0) {
+              targetFile.blobFallback = availableBlob;
+              registerMemoryFile(trackId, availableBlob, handle);
+              setNeedsDirectoryReauth(false);
+            }
+          } catch (e) {
+            console.warn('Could not read file from targetFile.handle directly:', e);
+          }
+        }
+      } catch (err) {
+        console.warn('Direct handle check error:', err);
       }
     }
 
-    // 1. Check stored directory handles to reauthorize folder access for ALL tracks
+    // 2. Stored Directory Handles: Elevate permission and resolve target file instantly in <10ms
     if (!availableBlob) {
       try {
         const dirHandles = await getAllDirectoryHandles();
@@ -783,50 +807,39 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
             if (perm !== 'granted' && anyDh.requestPermission) {
               try {
                 perm = await anyDh.requestPermission({ mode: 'read' });
-              } catch {}
+              } catch (permErr) {
+                console.warn('Directory requestPermission error:', permErr);
+              }
             }
             if (perm === 'granted') {
-              await relinkFolderHandles(dh);
-              const refreshed = getMemoryFile(trackId);
-              if (refreshed?.file) {
-                availableBlob = refreshed.file;
-                persistBinaryBlob(trackId, availableBlob).catch(() => {});
-                setNeedsDirectoryReauth(false);
+              setNeedsDirectoryReauth(false);
+              const resolved = await resolveFileFromDirectory(dh, targetFile?.relativePath || '', targetFile?.name || '');
+              if (resolved?.file) {
+                availableBlob = resolved.file;
+                if (targetFile) {
+                  targetFile.blobFallback = resolved.file;
+                  if (resolved.handle) targetFile.handle = resolved.handle;
+                }
+                registerMemoryFile(trackId, resolved.file, resolved.handle);
+                // Background relink of remaining files without blocking current playback
+                relinkFolderHandles(dh).catch(() => {});
                 break;
               }
             }
-          } catch {}
-        }
-      } catch {}
-    }
-
-    // 2. Fallback to direct file handle if directory handles were not stored
-    if (!availableBlob && targetFile?.handle) {
-      try {
-        const handle = targetFile.handle;
-        // @ts-expect-error queryPermission mode check
-        if (handle.queryPermission) {
-          // @ts-expect-error queryPermission mode check
-          const query = await handle.queryPermission({ mode: 'read' });
-          if (query !== 'granted') {
-            // @ts-expect-error requestPermission mode check
-            const req = await handle.requestPermission({ mode: 'read' });
-            if (req !== 'granted') {
-              setStatusNotice(`Select folder or file to re-link disk access for "${targetFile.name}".`);
-              setNeedsDirectoryReauth(true);
-            }
+          } catch (dhErr) {
+            console.warn('Directory handle query error:', dhErr);
           }
         }
-        if (handle.getFile) {
-          try {
-            availableBlob = await handle.getFile();
-            registerMemoryFile(trackId, availableBlob, handle);
-            persistBinaryBlob(trackId, availableBlob).catch(() => {});
-            setNeedsDirectoryReauth(false);
-          } catch {}
-        }
       } catch (err) {
-        console.warn('Could not read file from handle directly:', err);
+        console.warn('Directory handles check error:', err);
+      }
+    }
+
+    // 3. Fallback to cached binary blob (OPFS, CacheStorage, IndexedDB media_blobs)
+    if (!availableBlob) {
+      availableBlob = await retrieveBinaryBlob(trackId);
+      if (availableBlob && targetFile) {
+        targetFile.blobFallback = availableBlob;
       }
     }
 
@@ -841,6 +854,7 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
       }
     } else {
       setNeedsDirectoryReauth(true);
+      setStatusNotice(`Select folder or file to re-link disk access for "${targetFile?.name || 'video'}".`);
     }
 
     syncChannel.post({

@@ -33,7 +33,7 @@ import {
 } from 'lucide-react';
 import { MediaFile, SyncMessage } from '../types';
 import { getMediaFile, getMemoryFile, saveMediaFile, registerMemoryFile, getAllDirectoryHandles, getAllMediaFiles, retrieveBinaryBlob, persistBinaryBlob } from '../lib/db';
-import { relinkFolderHandles, generateUUID, isInsideIframe, pickFolderToRelink, pickFilesToRelink, relinkFilesFromList } from '../lib/fileIngestion';
+import { relinkFolderHandles, resolveFileFromDirectory, generateUUID, isInsideIframe, pickFolderToRelink, pickFilesToRelink, relinkFilesFromList } from '../lib/fileIngestion';
 import { syncChannel, getPopoutUrl } from '../lib/syncChannel';
 import {
   openPipControls,
@@ -530,18 +530,18 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
 
         // 6. Check stored directory handles
         const dirHandles = await getAllDirectoryHandles();
-        if (dirHandles.length > 0) {
+        if (dirHandles.length > 0 && fileRecord) {
           for (const dirHandle of dirHandles) {
             try {
               // @ts-expect-error queryPermission mode check
               const dirPerm = await dirHandle.queryPermission({ mode: 'read' });
               if (dirPerm === 'granted') {
-                await relinkFolderHandles(dirHandle);
-                const refreshed = await getMediaFile(trackId);
-                if (refreshed?.handle) {
-                  mediaBlob = await refreshed.handle.getFile();
-                  registerMemoryFile(trackId, mediaBlob, refreshed.handle);
-                  playMediaBlob(refreshed, mediaBlob, autoPlay);
+                const resolved = await resolveFileFromDirectory(dirHandle, fileRecord.relativePath || '', fileRecord.name);
+                if (resolved?.file) {
+                  mediaBlob = resolved.file;
+                  registerMemoryFile(trackId, mediaBlob, resolved.handle);
+                  playMediaBlob(fileRecord, mediaBlob, autoPlay);
+                  relinkFolderHandles(dirHandle).catch(() => {});
                   return;
                 }
               }
@@ -777,13 +777,24 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           // @ts-expect-error requestPermission mode check
           const dirStatus = await dirHandle.requestPermission({ mode: 'read' });
           if (dirStatus === 'granted') {
-            await relinkFolderHandles(dirHandle);
             setNeedsPermission(false);
             setPendingTrack(null);
             setErrorMessage(null);
             if (trackToLoad?.trackId) {
+              const fileRec = await getMediaFile(trackToLoad.trackId);
+              if (fileRec) {
+                const resolved = await resolveFileFromDirectory(dirHandle, fileRec.relativePath || '', fileRec.name);
+                if (resolved?.file) {
+                  registerMemoryFile(trackToLoad.trackId, resolved.file, resolved.handle);
+                  persistBinaryBlob(trackToLoad.trackId, resolved.file).catch(() => {});
+                  playMediaBlob(fileRec, resolved.file, trackToLoad.autoPlay ?? true);
+                  relinkFolderHandles(dirHandle).catch(() => {});
+                  return;
+                }
+              }
               await loadTrackById(trackToLoad.trackId, trackToLoad.autoPlay ?? true);
             }
+            relinkFolderHandles(dirHandle).catch(() => {});
             return;
           }
         } catch (dirPermErr) {
@@ -820,13 +831,24 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           // @ts-expect-error showDirectoryPicker
           const dirHandle = await window.showDirectoryPicker({ mode: 'read' });
           if (dirHandle) {
-            await relinkFolderHandles(dirHandle);
             setNeedsPermission(false);
             setPendingTrack(null);
             setErrorMessage(null);
             if (trackToLoad?.trackId) {
+              const fileRec = await getMediaFile(trackToLoad.trackId);
+              if (fileRec) {
+                const resolved = await resolveFileFromDirectory(dirHandle, fileRec.relativePath || '', fileRec.name);
+                if (resolved?.file) {
+                  registerMemoryFile(trackToLoad.trackId, resolved.file, resolved.handle);
+                  persistBinaryBlob(trackToLoad.trackId, resolved.file).catch(() => {});
+                  playMediaBlob(fileRec, resolved.file, trackToLoad.autoPlay ?? true);
+                  relinkFolderHandles(dirHandle).catch(() => {});
+                  return;
+                }
+              }
               await loadTrackById(trackToLoad.trackId, trackToLoad.autoPlay ?? true);
             }
+            relinkFolderHandles(dirHandle).catch(() => {});
             return;
           }
         } catch (dirErr: any) {

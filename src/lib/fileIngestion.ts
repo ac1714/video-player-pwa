@@ -350,6 +350,95 @@ async function scanDirectory(
 }
 
 /**
+ * Fast direct lookup of a single file from a directory handle without scanning entire directory tree.
+ * Resolves in milliseconds directly during user click gesture.
+ */
+export async function resolveFileFromDirectory(
+  dirHandle: FileSystemDirectoryHandle,
+  relativePath: string,
+  fileName: string
+): Promise<{ file: File; handle: FileSystemFileHandle } | null> {
+  if (!dirHandle || (!relativePath && !fileName)) return null;
+
+  try {
+    // 1. Direct path lookup from relativePath
+    if (relativePath) {
+      let clean = relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
+      if (dirHandle.name && clean.toLowerCase().startsWith(dirHandle.name.toLowerCase() + '/')) {
+        clean = clean.slice(dirHandle.name.length + 1);
+      }
+      const parts = clean.split('/').filter(Boolean);
+      if (parts.length > 0) {
+        try {
+          let cur: FileSystemDirectoryHandle = dirHandle;
+          for (let i = 0; i < parts.length - 1; i++) {
+            cur = await cur.getDirectoryHandle(parts[i]);
+          }
+          const fh = await cur.getFileHandle(parts[parts.length - 1]);
+          const file = await fh.getFile();
+          if (file && file.size > 0) {
+            return { file, handle: fh };
+          }
+        } catch {
+          // Path traversal failed, proceed to fallback lookup
+        }
+      }
+    }
+
+    // 2. Direct fileName lookup in dirHandle root
+    if (fileName) {
+      try {
+        const fh = await dirHandle.getFileHandle(fileName);
+        const file = await fh.getFile();
+        if (file && file.size > 0) {
+          return { file, handle: fh };
+        }
+      } catch {}
+    }
+
+    // 3. Fast shallow search (depth <= 4)
+    async function searchDir(dir: FileSystemDirectoryHandle, depth: number): Promise<{ file: File; handle: FileSystemFileHandle } | null> {
+      if (depth > 4) return null;
+      try {
+        const iter = typeof (dir as any).values === 'function'
+          ? (dir as any).values()
+          : typeof (dir as any).entries === 'function'
+          ? (dir as any).entries()
+          : (dir as any)[Symbol.asyncIterator]();
+
+        const subDirs: FileSystemDirectoryHandle[] = [];
+        for await (const rawItem of iter) {
+          const entry: FileSystemHandle = Array.isArray(rawItem) ? rawItem[1] : rawItem;
+          if (!entry) continue;
+          if (entry.kind === 'file') {
+            if (entry.name.toLowerCase() === fileName.toLowerCase()) {
+              const fh = entry as FileSystemFileHandle;
+              const file = await fh.getFile();
+              if (file && file.size > 0) {
+                return { file, handle: fh };
+              }
+            }
+          } else if (entry.kind === 'directory') {
+            subDirs.push(entry as FileSystemDirectoryHandle);
+          }
+        }
+
+        for (const sub of subDirs) {
+          const res = await searchDir(sub, depth + 1);
+          if (res) return res;
+        }
+      } catch {}
+      return null;
+    }
+
+    return await searchDir(dirHandle, 0);
+  } catch (err) {
+    console.warn('resolveFileFromDirectory error:', err);
+    return null;
+  }
+}
+
+/**
  * Re-links missing or ungranted FileSystemFileHandles by scanning a chosen directory handle
  */
 export async function relinkFolderHandles(dirHandle: FileSystemDirectoryHandle): Promise<{ matched: number; matchedFiles: MediaFile[] }> {
