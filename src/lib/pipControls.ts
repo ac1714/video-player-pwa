@@ -22,6 +22,11 @@ export interface PipControlsHandlers {
 
 let activePipWindow: any = null;
 let isUserScrubbingPip = false;
+let activeHandlers: PipControlsHandlers | null = null;
+
+export function updatePipHandlers(handlers: PipControlsHandlers): void {
+  activeHandlers = handlers;
+}
 
 function formatTime(secs: number): string {
   if (!secs || isNaN(secs) || secs < 0) return '0:00';
@@ -82,9 +87,8 @@ export async function openPipControls(handlers: PipControlsHandlers): Promise<bo
     return false;
   }
 
-  if (!pipWin) return false;
-
   activePipWindow = pipWin;
+  activeHandlers = handlers;
 
   // Build controls document
   const doc = pipWin.document;
@@ -298,7 +302,9 @@ export async function openPipControls(handlers: PipControlsHandlers): Promise<bo
   prevBtn.innerHTML = ICON_PREV;
   prevBtn.title = 'Previous Video';
   prevBtn.style.cssText = 'width:34px; height:34px; border-radius:8px;';
-  prevBtn.onclick = () => handlers.onPrev();
+  prevBtn.onclick = () => {
+    if (activeHandlers?.onPrev) activeHandlers.onPrev();
+  };
   leftControls.appendChild(prevBtn);
 
   // -10s
@@ -307,7 +313,9 @@ export async function openPipControls(handlers: PipControlsHandlers): Promise<bo
   rewBtn.textContent = '-10s';
   rewBtn.title = 'Rewind 10 Seconds';
   rewBtn.style.cssText = 'padding:0 10px; height:34px; font-size:11px; font-weight:700; border-radius:8px; font-family:ui-monospace, monospace;';
-  rewBtn.onclick = () => handlers.onSkip(-10);
+  rewBtn.onclick = () => {
+    if (activeHandlers?.onSkip) activeHandlers.onSkip(-10);
+  };
   leftControls.appendChild(rewBtn);
 
   // Play/Pause (Pure White Button with Black Icon)
@@ -317,7 +325,9 @@ export async function openPipControls(handlers: PipControlsHandlers): Promise<bo
   playBtn.innerHTML = handlers.getIsPlaying() ? ICON_PAUSE : ICON_PLAY;
   playBtn.title = handlers.getIsPlaying() ? 'Pause' : 'Play';
   playBtn.onclick = () => {
-    handlers.onPlayPause();
+    if (activeHandlers?.onPlayPause) {
+      activeHandlers.onPlayPause();
+    }
   };
   leftControls.appendChild(playBtn);
 
@@ -327,7 +337,9 @@ export async function openPipControls(handlers: PipControlsHandlers): Promise<bo
   fwdBtn.textContent = '+10s';
   fwdBtn.title = 'Forward 10 Seconds';
   fwdBtn.style.cssText = 'padding:0 10px; height:34px; font-size:11px; font-weight:700; border-radius:8px; font-family:ui-monospace, monospace;';
-  fwdBtn.onclick = () => handlers.onSkip(10);
+  fwdBtn.onclick = () => {
+    if (activeHandlers?.onSkip) activeHandlers.onSkip(10);
+  };
   leftControls.appendChild(fwdBtn);
 
   // Next
@@ -336,7 +348,9 @@ export async function openPipControls(handlers: PipControlsHandlers): Promise<bo
   nextBtn.innerHTML = ICON_NEXT;
   nextBtn.title = 'Next Video';
   nextBtn.style.cssText = 'width:34px; height:34px; border-radius:8px;';
-  nextBtn.onclick = () => handlers.onNext();
+  nextBtn.onclick = () => {
+    if (activeHandlers?.onNext) activeHandlers.onNext();
+  };
   leftControls.appendChild(nextBtn);
 
   botRow.appendChild(leftControls);
@@ -349,10 +363,12 @@ export async function openPipControls(handlers: PipControlsHandlers): Promise<bo
   muteBtn.title = handlers.getIsMuted() ? 'Unmute' : 'Mute';
   muteBtn.style.cssText = 'width:34px; height:34px; border-radius:8px;';
   muteBtn.onclick = () => {
-    handlers.onToggleMute();
-    const muted = handlers.getIsMuted();
-    muteBtn.innerHTML = muted ? ICON_MUTE : ICON_UNMUTE;
-    muteBtn.title = muted ? 'Unmute' : 'Mute';
+    if (activeHandlers?.onToggleMute) {
+      activeHandlers.onToggleMute();
+      const muted = activeHandlers.getIsMuted ? activeHandlers.getIsMuted() : false;
+      muteBtn.innerHTML = muted ? ICON_MUTE : ICON_UNMUTE;
+      muteBtn.title = muted ? 'Unmute' : 'Mute';
+    }
   };
   botRow.appendChild(muteBtn);
 

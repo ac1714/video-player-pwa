@@ -178,6 +178,31 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   const mediaFilesRef = useRef<MediaFile[]>(mediaFiles);
   const handlePlayNextRef = useRef<() => void>(() => {});
   const handlePlayPrevRef = useRef<() => void>(() => {});
+  const playerStateRef = useRef<'playing' | 'paused' | 'buffering' | 'idle'>(playerState);
+  const currentTimeRef = useRef<number>(currentTime);
+  const durationRef = useRef<number>(duration);
+  const isMutedRef = useRef<boolean>(isMuted);
+  const volumeRef = useRef<number>(volume);
+
+  useEffect(() => {
+    playerStateRef.current = playerState;
+  }, [playerState]);
+
+  useEffect(() => {
+    currentTimeRef.current = currentTime;
+  }, [currentTime]);
+
+  useEffect(() => {
+    durationRef.current = duration;
+  }, [duration]);
+
+  useEffect(() => {
+    isMutedRef.current = isMuted;
+  }, [isMuted]);
+
+  useEffect(() => {
+    volumeRef.current = volume;
+  }, [volume]);
 
   useEffect(() => {
     queueRef.current = queue;
@@ -563,10 +588,20 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
           }
           break;
 
-        case 'STATE_CHANGE':
+        case 'STATE_CHANGE': {
           setIsPlayerConnected(true);
           setPlayerState(msg.payload.state);
+          playerStateRef.current = msg.payload.state;
+          const currTrack = mediaFilesRef.current.find((f) => f.id === activeTrackIdRef.current);
+          updatePipControlsState(
+            currentTimeRef.current,
+            durationRef.current,
+            msg.payload.state === 'playing',
+            currTrack?.name,
+            isMutedRef.current
+          );
           break;
+        }
 
         case 'TIME_UPDATE':
           setIsPlayerConnected(true);
@@ -927,39 +962,49 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   const dispatchPlay = () => {
     const targetId = activeTrackIdRef.current || activeTrackId || (queueRef.current?.[0]) || (mediaFilesRef.current?.[0]?.id);
     if (!targetId) return;
-    if (!activeTrackId) {
+    if (!activeTrackIdRef.current) {
       dispatchLoadTrack(targetId, true);
       return;
     }
     syncChannel.post({ type: 'PLAY' });
     setPlayerState('playing');
-    updatePipControlsState(currentTime, duration, true, activeTrack?.name, isMuted);
+    playerStateRef.current = 'playing';
+    const currTrack = mediaFilesRef.current.find((f) => f.id === targetId);
+    updatePipControlsState(currentTimeRef.current, durationRef.current, true, currTrack?.name, isMutedRef.current);
   };
 
   const dispatchPause = () => {
     syncChannel.post({ type: 'PAUSE' });
     setPlayerState('paused');
-    updatePipControlsState(currentTime, duration, false, activeTrack?.name, isMuted);
+    playerStateRef.current = 'paused';
+    const targetId = activeTrackIdRef.current || activeTrackId;
+    const currTrack = mediaFilesRef.current.find((f) => f.id === targetId);
+    updatePipControlsState(currentTimeRef.current, durationRef.current, false, currTrack?.name, isMutedRef.current);
   };
 
   const dispatchSeek = (time: number) => {
     setCurrentTime(time);
+    currentTimeRef.current = time;
     syncChannel.post({
       type: 'SEEK_TO',
       payload: { time },
     });
-    updatePipControlsState(time, duration, playerState === 'playing', activeTrack?.name, isMuted);
+    const currTrack = mediaFilesRef.current.find((f) => f.id === activeTrackIdRef.current);
+    updatePipControlsState(time, durationRef.current, playerStateRef.current === 'playing', currTrack?.name, isMutedRef.current);
   };
 
   const dispatchVolume = (vol: number, muted: boolean) => {
     setVolume(vol);
     setIsMuted(muted);
+    volumeRef.current = vol;
+    isMutedRef.current = muted;
     setVolumeState(vol, muted);
     syncChannel.post({
       type: 'SET_VOLUME',
       payload: { volume: vol, muted },
     });
-    updatePipControlsState(currentTime, duration, playerState === 'playing', activeTrack?.name, muted);
+    const currTrack = mediaFilesRef.current.find((f) => f.id === activeTrackIdRef.current);
+    updatePipControlsState(currentTimeRef.current, durationRef.current, playerStateRef.current === 'playing', currTrack?.name, muted);
   };
 
   // Picture-in-Picture Floating Video Controls Window (Only controls, video stays on main screen)
@@ -971,16 +1016,18 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
       return;
     }
 
-    const currentTrack = mediaFiles.find((f) => f.id === activeTrackId);
-
     const opened = await openPipControls({
-      getTitle: () => currentTrack?.name || 'Local Media Video',
-      getCurrentTime: () => currentTime,
-      getDuration: () => duration,
-      getIsPlaying: () => playerState === 'playing',
-      getIsMuted: () => isMuted,
+      getTitle: () => {
+        const id = activeTrackIdRef.current;
+        const track = mediaFilesRef.current.find((f) => f.id === id);
+        return track?.name || 'Local Media Video';
+      },
+      getCurrentTime: () => currentTimeRef.current,
+      getDuration: () => durationRef.current,
+      getIsPlaying: () => playerStateRef.current === 'playing',
+      getIsMuted: () => isMutedRef.current,
       onPlayPause: () => {
-        if (playerState === 'playing') {
+        if (playerStateRef.current === 'playing') {
           dispatchPause();
         } else {
           dispatchPlay();
@@ -992,11 +1039,13 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         dispatchSeek(targetTime);
       },
       onSkip: (delta: number) => {
-        const newT = Math.max(0, Math.min(duration || 0, currentTime + delta));
+        const dur = durationRef.current || 0;
+        const cur = currentTimeRef.current || 0;
+        const newT = Math.max(0, Math.min(dur, cur + delta));
         dispatchSeek(newT);
       },
       onToggleMute: () => {
-        dispatchVolume(volume, !isMuted);
+        dispatchVolume(volumeRef.current, !isMutedRef.current);
       },
       onClose: () => {
         setIsPiPActive(false);
