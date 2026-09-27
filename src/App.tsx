@@ -201,19 +201,44 @@ export default function App() {
               <div className="lg:col-span-5 xl:col-span-5 h-[340px] sm:h-[420px] lg:h-[calc(100vh-5.5rem)] sticky top-0 bg-black p-3 sm:p-4 flex flex-col z-20 order-1 lg:order-2 border-b lg:border-b-0 border-neutral-800">
                 <div className="flex items-center justify-end pb-2 text-xs text-neutral-400">
                   <div className="flex items-center gap-2">
-                    <button
+                    <a
                       id="split-pop-out-btn"
-                      onClick={() => {
+                      href={getPopoutUrl(activeTrackId || undefined)}
+                      target="_blank"
+                      rel="opener"
+                      onMouseEnter={(e) => {
                         const videoEl = document.getElementById('pwa-main-video-element') as HTMLVideoElement | null;
                         const cur = videoEl && Number.isFinite(videoEl.currentTime) ? videoEl.currentTime : undefined;
-                        handleOpenPopout(undefined, cur);
+                        const tid = activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId;
+                        e.currentTarget.href = getPopoutUrl(tid, cur);
+                      }}
+                      onMouseDown={(e) => {
+                        const videoEl = document.getElementById('pwa-main-video-element') as HTMLVideoElement | null;
+                        const cur = videoEl && Number.isFinite(videoEl.currentTime) ? videoEl.currentTime : undefined;
+                        const tid = activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId;
+                        e.currentTarget.href = getPopoutUrl(tid, cur);
+                      }}
+                      onClick={(e) => {
+                        const videoEl = document.getElementById('pwa-main-video-element') as HTMLVideoElement | null;
+                        const cur = videoEl && Number.isFinite(videoEl.currentTime) ? videoEl.currentTime : undefined;
+                        const tid = activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId;
+                        e.currentTarget.href = getPopoutUrl(tid, cur);
+                        if (tid) {
+                          saveActivePlaybackState({ trackId: tid, isPlaying: true, lastTime: cur, currentTime: cur });
+                          (window as any).__PWA_ACTIVE_TRACK_ID__ = tid;
+                          (window as any).__PWA_ACTIVE_TRACK_TIME__ = cur || 0;
+                        }
+                        if (videoEl && !videoEl.paused) {
+                          try { videoEl.pause(); } catch {}
+                        }
+                        setIsExternalActive(true);
                       }}
                       className="px-2.5 py-1 rounded-md bg-amber-500 hover:bg-amber-400 text-black font-semibold transition cursor-pointer flex items-center gap-1.5 shadow-sm active:scale-95 text-xs"
                       title="Open dedicated video player in a new browser tab"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />
                       <span>Open in New Tab</span>
-                    </button>
+                    </a>
                     <button
                       onClick={() => setViewMode('controller')}
                       className="text-neutral-400 hover:text-white font-medium transition cursor-pointer px-2 py-1"

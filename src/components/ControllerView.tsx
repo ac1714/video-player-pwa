@@ -928,10 +928,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
       : (currentTimeRef.current || currentTime || 0);
     const targetId = trackIdToOpen || activeTrackIdRef.current || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
 
-    if (onOpenPlayerInNewTab) {
-      onOpenPlayerInNewTab(targetId, targetTime);
-      return;
-    }
     const mem = targetId ? getMemoryFile(targetId) : undefined;
     const fileObj = mediaFiles.find((f) => f.id === targetId);
     const blob = mem?.file || fileObj?.blobFallback;
@@ -1618,22 +1614,48 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
             rel="opener"
             onMouseEnter={(e) => {
               const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
-              const cur = videoEl && Number.isFinite(videoEl.currentTime) ? videoEl.currentTime : (currentTimeRef.current || currentTime || 0);
+              const cur = (videoEl && Number.isFinite(videoEl.currentTime) && videoEl.currentTime > 0)
+                ? videoEl.currentTime
+                : (currentTimeRef.current || currentTime || 0);
+              const tid = activeTrackIdRef.current || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
+              e.currentTarget.href = getPopoutUrl(tid, cur);
+            }}
+            onMouseDown={(e) => {
+              const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
+              const cur = (videoEl && Number.isFinite(videoEl.currentTime) && videoEl.currentTime > 0)
+                ? videoEl.currentTime
+                : (currentTimeRef.current || currentTime || 0);
               const tid = activeTrackIdRef.current || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
               e.currentTarget.href = getPopoutUrl(tid, cur);
             }}
             onClick={(e) => {
-              e.preventDefault();
               const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
-              const targetTime = videoEl && Number.isFinite(videoEl.currentTime) && videoEl.currentTime > 0
+              const targetTime = (videoEl && Number.isFinite(videoEl.currentTime) && videoEl.currentTime > 0)
                 ? videoEl.currentTime
                 : (currentTimeRef.current || currentTime || (window as any).__PWA_ACTIVE_TRACK_TIME__ || 0);
               const targetId = activeTrackIdRef.current || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
-              if (onOpenPlayerInNewTab) {
-                onOpenPlayerInNewTab(targetId, targetTime);
-              } else {
-                handleOpenPopoutWindow(targetId);
+              
+              const url = getPopoutUrl(targetId, targetTime);
+              e.currentTarget.href = url;
+
+              if (targetId) {
+                saveActivePlaybackState({ trackId: targetId, isPlaying: true, lastTime: targetTime, currentTime: targetTime });
+                (window as any).__PWA_ACTIVE_TRACK_ID__ = targetId;
+                (window as any).__PWA_ACTIVE_TRACK_TIME__ = targetTime;
+                const mem = getMemoryFile(targetId);
+                const fileObj = mediaFiles.find((f) => f.id === targetId);
+                const blob = mem?.file || fileObj?.blobFallback;
+                if (blob) {
+                  (window as any).__PWA_ACTIVE_MEDIA_BLOB__ = blob;
+                }
               }
+
+              if (videoEl && !videoEl.paused) {
+                try {
+                  videoEl.pause();
+                } catch {}
+              }
+
               setStatusNotice('Opening dedicated video player in a new browser tab...');
             }}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-400 text-xs font-semibold transition cursor-pointer shadow-sm active:scale-95"
@@ -2674,22 +2696,48 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                 rel="opener"
                 onMouseEnter={(e) => {
                   const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
-                  const cur = videoEl && Number.isFinite(videoEl.currentTime) ? videoEl.currentTime : (currentTimeRef.current || currentTime || 0);
+                  const cur = (videoEl && Number.isFinite(videoEl.currentTime) && videoEl.currentTime > 0)
+                    ? videoEl.currentTime
+                    : (currentTimeRef.current || currentTime || 0);
+                  const tid = activeTrackIdRef.current || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
+                  e.currentTarget.href = getPopoutUrl(tid, cur);
+                }}
+                onMouseDown={(e) => {
+                  const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
+                  const cur = (videoEl && Number.isFinite(videoEl.currentTime) && videoEl.currentTime > 0)
+                    ? videoEl.currentTime
+                    : (currentTimeRef.current || currentTime || 0);
                   const tid = activeTrackIdRef.current || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
                   e.currentTarget.href = getPopoutUrl(tid, cur);
                 }}
                 onClick={(e) => {
-                  e.preventDefault();
                   const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
-                  const targetTime = videoEl && Number.isFinite(videoEl.currentTime) && videoEl.currentTime > 0
+                  const targetTime = (videoEl && Number.isFinite(videoEl.currentTime) && videoEl.currentTime > 0)
                     ? videoEl.currentTime
                     : (currentTimeRef.current || currentTime || (window as any).__PWA_ACTIVE_TRACK_TIME__ || 0);
                   const targetId = activeTrackIdRef.current || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
-                  if (onOpenPlayerInNewTab) {
-                    onOpenPlayerInNewTab(targetId, targetTime);
-                  } else {
-                    handleOpenPopoutWindow(targetId);
+                  
+                  const url = getPopoutUrl(targetId, targetTime);
+                  e.currentTarget.href = url;
+
+                  if (targetId) {
+                    saveActivePlaybackState({ trackId: targetId, isPlaying: true, lastTime: targetTime, currentTime: targetTime });
+                    (window as any).__PWA_ACTIVE_TRACK_ID__ = targetId;
+                    (window as any).__PWA_ACTIVE_TRACK_TIME__ = targetTime;
+                    const mem = getMemoryFile(targetId);
+                    const fileObj = mediaFiles.find((f) => f.id === targetId);
+                    const blob = mem?.file || fileObj?.blobFallback;
+                    if (blob) {
+                      (window as any).__PWA_ACTIVE_MEDIA_BLOB__ = blob;
+                    }
                   }
+
+                  if (videoEl && !videoEl.paused) {
+                    try {
+                      videoEl.pause();
+                    } catch {}
+                  }
+
                   setStatusNotice('Opening video player in new tab...');
                 }}
                 className="p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 text-neutral-500 hover:text-amber-500 hover:border-amber-500/50 dark:hover:text-amber-400 transition cursor-pointer inline-flex items-center justify-center"
