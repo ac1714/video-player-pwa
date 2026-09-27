@@ -17,6 +17,8 @@ import {
   Pause,
   SkipBack,
   SkipForward,
+  Rewind,
+  FastForward,
   Volume2,
   VolumeX,
   ListPlus,
@@ -1101,6 +1103,13 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
     }
   };
   handlePlayPrevRef.current = handlePlayPrev;
+
+  const handleSkip = (delta: number) => {
+    const dur = durationRef.current || duration || 0;
+    const cur = currentTimeRef.current || currentTime || 0;
+    const newT = Math.max(0, Math.min(dur, cur + delta));
+    dispatchSeek(newT);
+  };
 
   // Queue Operations
   const handleAddToQueue = (trackId: string, playNow: boolean = false, playNext: boolean = false) => {
@@ -2576,6 +2585,15 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
               </button>
 
               <button
+                id="ctrl-rewind-1m-btn"
+                onClick={() => handleSkip(-60)}
+                className="p-1.5 text-neutral-500 hover:text-neutral-900 dark:hover:text-white transition cursor-pointer"
+                title="Rewind 1 Minute (-60s)"
+              >
+                <Rewind className="w-4 h-4 fill-current" />
+              </button>
+
+              <button
                 id="ctrl-play-pause-btn"
                 onClick={() => {
                   if (playerState === 'playing') {
@@ -2592,6 +2610,15 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                 ) : (
                   <Play className="w-4 h-4 fill-current ml-0.5" />
                 )}
+              </button>
+
+              <button
+                id="ctrl-forward-1m-btn"
+                onClick={() => handleSkip(60)}
+                className="p-1.5 text-neutral-500 hover:text-neutral-900 dark:hover:text-white transition cursor-pointer"
+                title="Fast Forward 1 Minute (+60s)"
+              >
+                <FastForward className="w-4 h-4 fill-current" />
               </button>
 
               <button

@@ -28,6 +28,8 @@ import {
   Expand,
   SkipBack,
   SkipForward,
+  Rewind,
+  FastForward,
   RotateCcw,
   RotateCw,
 } from 'lucide-react';
@@ -1008,6 +1010,15 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     handlePlayPrevRef.current = handlePlayPrev;
     handlePlayNextRef.current = handlePlayNext;
   }, [handlePlayPrev, handlePlayNext]);
+
+  const handleSkip = useCallback((delta: number) => {
+    if (videoRef.current) {
+      const newT = Math.max(0, Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + delta));
+      videoRef.current.currentTime = newT;
+      setCurrentTime(newT);
+      syncChannel.post({ type: 'SEEK_TO', payload: { time: newT } });
+    }
+  }, []);
 
   // Fullscreen Toggle
   const toggleFullscreen = useCallback(() => {
@@ -2050,6 +2061,16 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                   <SkipBack className="w-3.5 h-3.5 sm:w-4 sm:h-4 fill-current" />
                 </button>
 
+                {/* Rewind 1m Button */}
+                <button
+                  id="player-rewind-1m-btn"
+                  onClick={() => handleSkip(-60)}
+                  className="p-1.5 sm:p-2 rounded-xl bg-neutral-800/90 hover:bg-neutral-700 text-neutral-300 hover:text-white transition cursor-pointer active:scale-95"
+                  title="Rewind 1 Minute (-60s)"
+                >
+                  <Rewind className="w-3.5 h-3.5 sm:w-4 sm:h-4 fill-current" />
+                </button>
+
                 {/* Play/Pause Button */}
                 <button
                   id="player-play-pause-btn"
@@ -2068,6 +2089,16 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                   title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
                 >
                   {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" fill="currentColor" />}
+                </button>
+
+                {/* Fast Forward 1m Button */}
+                <button
+                  id="player-forward-1m-btn"
+                  onClick={() => handleSkip(60)}
+                  className="p-1.5 sm:p-2 rounded-xl bg-neutral-800/90 hover:bg-neutral-700 text-neutral-300 hover:text-white transition cursor-pointer active:scale-95"
+                  title="Fast Forward 1 Minute (+60s)"
+                >
+                  <FastForward className="w-3.5 h-3.5 sm:w-4 sm:h-4 fill-current" />
                 </button>
 
                 {/* Next Track Button */}
