@@ -36,6 +36,12 @@ import { getMediaFile, getMemoryFile, saveMediaFile, registerMemoryFile, getAllD
 import { relinkFolderHandles, generateUUID, isInsideIframe, pickFolderToRelink, pickFilesToRelink, relinkFilesFromList } from '../lib/fileIngestion';
 import { syncChannel, getPopoutUrl } from '../lib/syncChannel';
 import {
+  openPipControls,
+  closePipControls,
+  isPipControlsActive,
+  updatePipControlsState,
+} from '../lib/pipControls';
+import {
   getActivePlaybackState,
   saveActivePlaybackState,
   setActiveTrack,
@@ -264,21 +270,31 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       currentTrackRef.current = fileRecord;
       setCurrentTrack(fileRecord);
       setActiveTrack(fileRecord.id);
+      setCurrentTime(targetTime);
+      setDuration(fileRecord.duration || 0);
       updateMediaSession(fileRecord);
 
-      // Report active track to controller via SYNC_PONG (never post LOAD_TRACK from player to avoid loops)
+      // Report active track to controller via SYNC_PONG with accurate initial duration
       syncChannel.post({
         type: 'SYNC_PONG',
         payload: {
           trackId: fileRecord.id,
           state: autoPlay ? 'playing' : 'paused',
           currentTime: targetTime,
-          duration: 0,
+          duration: fileRecord.duration || 0,
           volume,
           muted: isMuted,
           loop: isLooping,
         },
       });
+
+      updatePipControlsState(
+        targetTime,
+        fileRecord.duration || 0,
+        autoPlay,
+        fileRecord.name,
+        isMuted
+      );
 
       if (videoRef.current) {
         videoRef.current.src = blobUrl;
@@ -885,157 +901,66 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     }
   };
 
-  // Picture-in-Picture toggle with Document PiP & native HTML5 support
+  // Picture-in-Picture toggle: Floating Video Controls Window (Video remains playing on main screen)
   const togglePiP = useCallback(async () => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    // 1. Close if document PiP window is open
-    if (pipWindowRef.current) {
-      try {
-        pipWindowRef.current.close();
-      } catch {}
-      pipWindowRef.current = null;
+    if (isPipControlsActive()) {
+      closePipControls();
       setIsPiP(false);
       syncChannel.post({ type: 'PIP_CHANGE', payload: { active: false } });
       return;
     }
 
-    // 2. Exit if standard video PiP is active
-    if (document.pictureInPictureElement) {
-      try {
-        await document.exitPictureInPicture();
-      } catch {}
-      setIsPiP(false);
-      syncChannel.post({ type: 'PIP_CHANGE', payload: { active: false } });
-      return;
-    }
-
-    // 3. Attempt Document Picture-in-Picture first (allows full on-screen Previous/Next/Play buttons in the floating window)
-    const docPip = typeof window !== 'undefined' && (window as any).documentPictureInPicture;
-    if (docPip && typeof docPip.requestWindow === 'function') {
-      try {
-        const pipWin = await docPip.requestWindow({
-          width: 520,
-          height: 340,
-        });
-        pipWindowRef.current = pipWin;
-
-        pipWin.document.body.style.margin = '0';
-        pipWin.document.body.style.padding = '0';
-        pipWin.document.body.style.background = '#0a0a0a';
-        pipWin.document.body.style.display = 'flex';
-        pipWin.document.body.style.flexDirection = 'column';
-        pipWin.document.body.style.height = '100vh';
-        pipWin.document.body.style.overflow = 'hidden';
-        pipWin.document.body.style.fontFamily = 'system-ui, -apple-system, sans-serif';
-
-        const originalParent = video.parentElement;
-        const originalNextSibling = video.nextSibling;
-        pipWin.document.body.appendChild(video);
-        video.style.width = '100%';
-        video.style.flex = '1';
-        video.style.minHeight = '0';
-        video.style.objectFit = 'contain';
-
-        // PiP Floating Window Controls
-        const ctrlBar = pipWin.document.createElement('div');
-        ctrlBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 14px;background:#171717;border-top:1px solid #262626;color:#fff;user-select:none;flex-shrink:0;';
-
-        const titleEl = pipWin.document.createElement('div');
-        titleEl.style.cssText = 'font-size:12px;font-weight:600;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#e5e5e5;';
-        titleEl.textContent = currentTrackRef.current?.name || 'Video Player';
-        ctrlBar.appendChild(titleEl);
-
-        const btnsGroup = pipWin.document.createElement('div');
-        btnsGroup.style.cssText = 'display:flex;align-items:center;gap:12px;';
-
-        // Previous button
-        const prevBtn = pipWin.document.createElement('button');
-        prevBtn.innerHTML = '&#9198;';
-        prevBtn.title = 'Previous Video';
-        prevBtn.style.cssText = 'background:#262626;border:none;color:#fff;border-radius:8px;padding:6px 12px;font-size:14px;cursor:pointer;';
-        prevBtn.onclick = () => handlePlayPrevRef.current();
-        btnsGroup.appendChild(prevBtn);
-
-        // Play/Pause button
-        const playBtn = pipWin.document.createElement('button');
-        playBtn.innerHTML = video.paused ? '&#9654;' : '&#10074;&#10074;';
-        playBtn.title = 'Play / Pause';
-        playBtn.style.cssText = 'background:#f59e0b;border:none;color:#000;font-weight:bold;border-radius:50%;width:34px;height:34px;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;';
-        playBtn.onclick = () => {
-          if (video.paused) video.play().catch(() => {});
-          else video.pause();
-        };
-        btnsGroup.appendChild(playBtn);
-
-        // Next button
-        const nextBtn = pipWin.document.createElement('button');
-        nextBtn.innerHTML = '&#9197;';
-        nextBtn.title = 'Next Video';
-        nextBtn.style.cssText = 'background:#262626;border:none;color:#fff;border-radius:8px;padding:6px 12px;font-size:14px;cursor:pointer;';
-        nextBtn.onclick = () => handlePlayNextRef.current();
-        btnsGroup.appendChild(nextBtn);
-
-        ctrlBar.appendChild(btnsGroup);
-
-        const closeBtn = pipWin.document.createElement('button');
-        closeBtn.textContent = '✕ Exit PiP';
-        closeBtn.style.cssText = 'background:none;border:1px solid #404040;color:#a3a3a3;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;';
-        closeBtn.onclick = () => pipWin.close();
-        ctrlBar.appendChild(closeBtn);
-
-        pipWin.document.body.appendChild(ctrlBar);
-
-        const updateBtn = () => {
-          playBtn.innerHTML = video.paused ? '&#9654;' : '&#10074;&#10074;';
-          if (currentTrackRef.current) {
-            titleEl.textContent = currentTrackRef.current.name;
+    const opened = await openPipControls({
+      getTitle: () => currentTrackRef.current?.name || 'Video Player',
+      getCurrentTime: () => videoRef.current?.currentTime || currentTime,
+      getDuration: () => videoRef.current?.duration || duration,
+      getIsPlaying: () => Boolean(videoRef.current && !videoRef.current.paused),
+      getIsMuted: () => Boolean(videoRef.current?.muted),
+      onPlayPause: () => {
+        if (videoRef.current) {
+          if (videoRef.current.paused) {
+            videoRef.current.play().catch(() => {});
+          } else {
+            videoRef.current.pause();
           }
-        };
-        video.addEventListener('play', updateBtn);
-        video.addEventListener('pause', updateBtn);
+        }
+      },
+      onPrev: () => handlePlayPrevRef.current(),
+      onNext: () => handlePlayNextRef.current(),
+      onSeek: (targetTime: number) => {
+        if (videoRef.current) {
+          videoRef.current.currentTime = targetTime;
+        }
+        setCurrentTime(targetTime);
+        syncChannel.post({ type: 'SEEK_TO', payload: { time: targetTime } });
+      },
+      onSkip: (delta: number) => {
+        if (videoRef.current) {
+          const newT = Math.max(0, Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + delta));
+          videoRef.current.currentTime = newT;
+          setCurrentTime(newT);
+          syncChannel.post({ type: 'SEEK_TO', payload: { time: newT } });
+        }
+      },
+      onToggleMute: () => {
+        if (videoRef.current) {
+          videoRef.current.muted = !videoRef.current.muted;
+          setIsMuted(videoRef.current.muted);
+          syncChannel.post({
+            type: 'SET_VOLUME',
+            payload: { volume, muted: videoRef.current.muted },
+          });
+        }
+      },
+      onClose: () => {
+        setIsPiP(false);
+        syncChannel.post({ type: 'PIP_CHANGE', payload: { active: false } });
+      },
+    });
 
-        pipWin.addEventListener('pagehide', () => {
-          video.removeEventListener('play', updateBtn);
-          video.removeEventListener('pause', updateBtn);
-          pipWindowRef.current = null;
-          if (originalParent) {
-            if (originalNextSibling) {
-              originalParent.insertBefore(video, originalNextSibling);
-            } else {
-              originalParent.appendChild(video);
-            }
-          }
-          setIsPiP(false);
-          syncChannel.post({ type: 'PIP_CHANGE', payload: { active: false } });
-        });
-
-        setIsPiP(true);
-        syncChannel.post({ type: 'PIP_CHANGE', payload: { active: true } });
-        return;
-      } catch (e) {
-        console.warn('Document PiP request failed, falling back to standard video PiP:', e);
-      }
-    }
-
-    // 4. Standard HTML5 Video PiP Fallback
-    try {
-      if (document.pictureInPictureEnabled && typeof video.requestPictureInPicture === 'function') {
-        await video.requestPictureInPicture();
-        setIsPiP(true);
-        syncChannel.post({ type: 'PIP_CHANGE', payload: { active: true } });
-      } else if ((video as any).webkitSupportsPresentationMode && typeof (video as any).webkitSetPresentationMode === 'function') {
-        const currentMode = (video as any).webkitPresentationMode;
-        const newMode = currentMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture';
-        (video as any).webkitSetPresentationMode(newMode);
-        setIsPiP(newMode === 'picture-in-picture');
-        syncChannel.post({ type: 'PIP_CHANGE', payload: { active: newMode === 'picture-in-picture' } });
-      }
-    } catch (err) {
-      console.warn('Standard PiP error:', err);
-    }
-  }, []);
+    setIsPiP(opened);
+    syncChannel.post({ type: 'PIP_CHANGE', payload: { active: opened } });
+  }, [currentTime, duration, volume, isMuted]);
 
   // Previous and Next Track Handlers for pop-out tab
   const handlePlayPrev = useCallback(async () => {
@@ -1453,6 +1378,16 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           if (videoRef.current && Number.isFinite(msg.payload.time)) {
             videoRef.current.currentTime = msg.payload.time;
           }
+          if (Number.isFinite(msg.payload.time)) {
+            setCurrentTime(msg.payload.time);
+            updatePipControlsState(
+              msg.payload.time,
+              videoRef.current?.duration || duration,
+              Boolean(videoRef.current && !videoRef.current.paused),
+              currentTrackRef.current?.name,
+              videoRef.current?.muted
+            );
+          }
           break;
 
         case 'SET_VOLUME':
@@ -1607,9 +1542,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     if (!dur || isNaN(dur) || !isFinite(dur) || dur <= 0) return;
     setDuration(dur);
     const activeTrack = currentTrackRef.current;
-    if (!activeTrack) return;
-
-    if (activeTrack.duration !== dur) {
+    if (activeTrack) {
       activeTrack.duration = dur;
       try {
         localStorage.setItem(`pwa_video_duration_${activeTrack.id}`, String(dur));
@@ -1617,29 +1550,45 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       getMediaFile(activeTrack.id).then((record) => {
         if (record && record.duration !== dur) {
           record.duration = dur;
-          saveMediaFile(record);
+          saveMediaFile(record).catch(() => {});
         }
       });
-      syncChannel.post({
-        type: 'TIME_UPDATE',
-        payload: {
-          trackId: activeTrack.id,
-          currentTime: videoRef.current?.currentTime || 0,
-          duration: dur,
-        },
-      });
     }
+
+    // Always broadcast TIME_UPDATE so ControllerView timeline is 100% accurate
+    syncChannel.post({
+      type: 'TIME_UPDATE',
+      payload: {
+        trackId: activeTrack?.id,
+        currentTime: videoRef.current?.currentTime || 0,
+        duration: dur,
+      },
+    });
+
+    updatePipControlsState(
+      videoRef.current?.currentTime || 0,
+      dur,
+      Boolean(videoRef.current && !videoRef.current.paused),
+      activeTrack?.name,
+      videoRef.current?.muted
+    );
   };
 
   const onLoadedMetadata = () => {
     if (videoRef.current) {
-      handleDurationUpdate(videoRef.current.duration);
+      const dur = videoRef.current.duration;
+      if (dur && isFinite(dur) && dur > 0) {
+        handleDurationUpdate(dur);
+      }
     }
   };
 
   const onDurationChange = () => {
     if (videoRef.current) {
-      handleDurationUpdate(videoRef.current.duration);
+      const dur = videoRef.current.duration;
+      if (dur && isFinite(dur) && dur > 0) {
+        handleDurationUpdate(dur);
+      }
     }
   };
 
@@ -1650,9 +1599,11 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     const cur = videoRef.current.currentTime;
     const dur = videoRef.current.duration || 0;
     setCurrentTime(cur);
-    setDuration(dur);
-    if (dur > 0 && currentTrackRef.current && currentTrackRef.current.duration !== dur) {
-      handleDurationUpdate(dur);
+    if (dur > 0 && dur !== duration) {
+      setDuration(dur);
+      if (currentTrackRef.current) {
+        currentTrackRef.current.duration = dur;
+      }
     }
 
     const now = performance.now();
@@ -1678,11 +1629,26 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         } catch {}
       }
     }
+
+    updatePipControlsState(
+      cur,
+      dur,
+      !videoRef.current.paused,
+      currentTrackRef.current?.name,
+      videoRef.current.muted
+    );
   };
 
   const onPlay = () => {
     if (embedded && isExternalActiveRef.current) return;
     setIsPlaying(true);
+    updatePipControlsState(
+      videoRef.current?.currentTime || 0,
+      videoRef.current?.duration || duration,
+      true,
+      currentTrackRef.current?.name,
+      videoRef.current?.muted
+    );
   };
 
   const onPlaying = () => {
@@ -1693,6 +1659,13 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     if ('mediaSession' in navigator) {
       navigator.mediaSession.playbackState = 'playing';
     }
+    updatePipControlsState(
+      videoRef.current?.currentTime || 0,
+      videoRef.current?.duration || duration,
+      true,
+      currentTrackRef.current?.name,
+      videoRef.current?.muted
+    );
   };
 
   const onPause = () => {
@@ -1704,6 +1677,13 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'paused';
       }
+      updatePipControlsState(
+        videoRef.current?.currentTime || 0,
+        videoRef.current?.duration || duration,
+        false,
+        currentTrackRef.current?.name,
+        videoRef.current?.muted
+      );
     }
   };
 
@@ -1837,82 +1817,18 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         } cursor-pointer transition-all duration-200`}
       />
 
-      {/* Picture-in-Picture Active Overlay with Dedicated Controls */}
+      {/* Floating Picture-in-Picture Controls Indicator - Unobtrusive corner pill that keeps video 100% visible */}
       {isPiP && (
-        <div className="absolute inset-0 z-30 bg-neutral-950/90 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center pointer-events-auto">
-          <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold px-4 py-1.5 rounded-full shadow-md mb-4">
-            <PictureInPicture2 className="w-4 h-4 animate-pulse" />
-            <span>Playing in Picture-in-Picture</span>
-          </div>
-
-          <h3 className="text-sm sm:text-base font-bold text-white max-w-sm truncate mb-1">
-            {currentTrack?.name || 'Local Media Video'}
-          </h3>
-          <p className="text-xs text-neutral-400 mb-5 font-mono">
-            {formatTime(currentTime)} / {formatTime(duration)}
-          </p>
-
-          {/* Dedicated PiP Video Controls */}
-          <div className="flex items-center justify-center gap-3 mb-5">
-            <button
-              id="pip-prev-btn"
-              onClick={handlePlayPrev}
-              className="p-2.5 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-neutral-300 hover:text-white border border-neutral-800 transition cursor-pointer active:scale-95 shadow-md"
-              title="Previous Video"
-            >
-              <SkipBack className="w-4 h-4 fill-current" />
-            </button>
-
-            <button
-              id="pip-play-pause-btn"
-              onClick={() => {
-                if (videoRef.current) {
-                  if (isPlaying) videoRef.current.pause();
-                  else videoRef.current.play().catch(() => {});
-                }
-              }}
-              className="p-3.5 rounded-2xl bg-amber-500 hover:bg-amber-400 text-black transition cursor-pointer active:scale-95 shadow-lg"
-              title={isPlaying ? 'Pause' : 'Play'}
-            >
-              {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
-            </button>
-
-            <button
-              id="pip-next-btn"
-              onClick={handlePlayNext}
-              className="p-2.5 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-neutral-300 hover:text-white border border-neutral-800 transition cursor-pointer active:scale-95 shadow-md"
-              title="Next Video"
-            >
-              <SkipForward className="w-4 h-4 fill-current" />
-            </button>
-          </div>
-
-          {/* Scrubber slider for PiP */}
-          <div className="w-full max-w-xs mb-5 px-2">
-            <input
-              type="range"
-              min="0"
-              max={duration > 0 ? duration : 100}
-              step="0.1"
-              value={currentTime}
-              onChange={(e) => {
-                const val = parseFloat(e.target.value);
-                setCurrentTime(val);
-                if (videoRef.current) videoRef.current.currentTime = val;
-              }}
-              className="w-full h-1.5 accent-amber-400 bg-neutral-800 rounded-lg cursor-pointer"
-            />
-          </div>
-
-          {/* Return from PiP Button */}
+        <div className="absolute top-3 right-3 z-30 pointer-events-auto">
           <button
-            id="pip-exit-btn"
+            id="pip-exit-indicator-btn"
             onClick={togglePiP}
-            className="px-4 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white font-medium text-xs border border-neutral-700 transition cursor-pointer flex items-center gap-2 shadow-md active:scale-95"
-            title="Exit Picture-in-Picture and return playback here"
+            className="flex items-center gap-2 bg-neutral-900/90 hover:bg-neutral-800/95 backdrop-blur-md border border-amber-500/40 text-amber-400 text-xs font-semibold px-3 py-1.5 rounded-full shadow-lg transition cursor-pointer active:scale-95 group"
+            title="Floating controls window is open. Click to close."
           >
-            <PictureInPicture2 className="w-4 h-4 text-amber-400" />
-            <span>Return Playback Here</span>
+            <PictureInPicture2 className="w-3.5 h-3.5 animate-pulse text-amber-400" />
+            <span>Floating Controls Active</span>
+            <span className="text-neutral-400 group-hover:text-white ml-0.5">✕</span>
           </button>
         </div>
       )}

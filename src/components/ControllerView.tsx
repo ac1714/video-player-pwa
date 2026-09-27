@@ -99,6 +99,12 @@ import {
   getStoredQueue,
   setStoredQueue,
 } from '../lib/localStorageState';
+import {
+  openPipControls,
+  closePipControls,
+  isPipControlsActive,
+  updatePipControlsState,
+} from '../lib/pipControls';
 import { PWAInstallButton } from './PWAInstallButton';
 import { OfflineIndicator } from './OfflineIndicator';
 import { ThemeToggle } from './ThemeToggle';
@@ -197,6 +203,22 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   useEffect(() => {
     mediaFilesRef.current = mediaFiles;
   }, [mediaFiles]);
+
+  // Global safety listener to release scrubbing if mouse/touch ends anywhere on window
+  useEffect(() => {
+    const handleGlobalPointerUp = () => {
+      if (isScrubbingRef.current) {
+        isScrubbingRef.current = false;
+        setIsScrubbing(false);
+      }
+    };
+    window.addEventListener('pointerup', handleGlobalPointerUp);
+    window.addEventListener('touchend', handleGlobalPointerUp);
+    return () => {
+      window.removeEventListener('pointerup', handleGlobalPointerUp);
+      window.removeEventListener('touchend', handleGlobalPointerUp);
+    };
+  }, []);
 
   // Playlist management UI states
   const [showCreateModal, setShowCreateModal] = useState<boolean>(false);
@@ -544,10 +566,14 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
         case 'TIME_UPDATE':
           setIsPlayerConnected(true);
-          if (!isScrubbingRef.current) {
+          // Ignore time updates from other tracks to prevent timeline desynchronization
+          if (msg.payload.trackId && activeTrackIdRef.current && msg.payload.trackId !== activeTrackIdRef.current) {
+            break;
+          }
+          if (!isScrubbingRef.current && Number.isFinite(msg.payload.currentTime)) {
             setCurrentTime(msg.payload.currentTime);
           }
-          if (msg.payload.duration > 0) {
+          if (msg.payload.duration > 0 && Number.isFinite(msg.payload.duration)) {
             setDuration(msg.payload.duration);
             const targetId = msg.payload.trackId || activeTrackIdRef.current;
             if (targetId) {
@@ -566,6 +592,13 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
               );
             }
           }
+          updatePipControlsState(
+            msg.payload.currentTime,
+            msg.payload.duration > 0 ? msg.payload.duration : duration,
+            playerState === 'playing',
+            activeTrack?.name,
+            isMuted
+          );
           break;
 
         case 'SET_VOLUME':
@@ -705,10 +738,26 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   const dispatchLoadTrack = async (trackId: string, autoPlay: boolean = true) => {
     setActiveTrackIdState(trackId);
     setActiveTrack(trackId);
+    activeTrackIdRef.current = trackId;
 
     const mem = getMemoryFile(trackId);
     const targetFile = mediaFiles.find((f) => f.id === trackId);
     let availableBlob: Blob | undefined = mem?.file || targetFile?.blobFallback;
+
+    // Reset timeline immediately on track switch
+    let initDur = targetFile?.duration || 0;
+    if (initDur <= 0) {
+      try {
+        const storedDur = parseFloat(localStorage.getItem(`pwa_video_duration_${trackId}`) || '0');
+        if (storedDur > 0) initDur = storedDur;
+      } catch {}
+    }
+    setCurrentTime(0);
+    setScrubTime(0);
+    setDuration(initDur);
+    isScrubbingRef.current = false;
+    setIsScrubbing(false);
+    updatePipControlsState(0, initDur, autoPlay, targetFile?.name, isMuted);
 
     if (!availableBlob) {
       availableBlob = await retrieveBinaryBlob(trackId);
@@ -862,11 +911,13 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
     }
     syncChannel.post({ type: 'PLAY' });
     setPlayerState('playing');
+    updatePipControlsState(currentTime, duration, true, activeTrack?.name, isMuted);
   };
 
   const dispatchPause = () => {
     syncChannel.post({ type: 'PAUSE' });
     setPlayerState('paused');
+    updatePipControlsState(currentTime, duration, false, activeTrack?.name, isMuted);
   };
 
   const dispatchSeek = (time: number) => {
@@ -875,6 +926,7 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
       type: 'SEEK_TO',
       payload: { time },
     });
+    updatePipControlsState(time, duration, playerState === 'playing', activeTrack?.name, isMuted);
   };
 
   const dispatchVolume = (vol: number, muted: boolean) => {
@@ -885,10 +937,55 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
       type: 'SET_VOLUME',
       payload: { volume: vol, muted },
     });
+    updatePipControlsState(currentTime, duration, playerState === 'playing', activeTrack?.name, muted);
   };
 
-  const dispatchTogglePiP = () => {
-    syncChannel.post({ type: 'TOGGLE_PIP' });
+  // Picture-in-Picture Floating Video Controls Window (Only controls, video stays on main screen)
+  const dispatchTogglePiP = async () => {
+    if (isPipControlsActive()) {
+      closePipControls();
+      setIsPiPActive(false);
+      syncChannel.post({ type: 'PIP_CHANGE', payload: { active: false } });
+      return;
+    }
+
+    const currentTrack = mediaFiles.find((f) => f.id === activeTrackId);
+
+    const opened = await openPipControls({
+      getTitle: () => currentTrack?.name || 'Local Media Video',
+      getCurrentTime: () => currentTime,
+      getDuration: () => duration,
+      getIsPlaying: () => playerState === 'playing',
+      getIsMuted: () => isMuted,
+      onPlayPause: () => {
+        if (playerState === 'playing') {
+          dispatchPause();
+        } else {
+          dispatchPlay();
+        }
+      },
+      onPrev: () => handlePlayPrevRef.current(),
+      onNext: () => handlePlayNextRef.current(),
+      onSeek: (targetTime: number) => {
+        dispatchSeek(targetTime);
+      },
+      onSkip: (delta: number) => {
+        const newT = Math.max(0, Math.min(duration || 0, currentTime + delta));
+        dispatchSeek(newT);
+      },
+      onToggleMute: () => {
+        dispatchVolume(volume, !isMuted);
+      },
+      onClose: () => {
+        setIsPiPActive(false);
+        syncChannel.post({ type: 'PIP_CHANGE', payload: { active: false } });
+      },
+    });
+
+    if (opened) {
+      setIsPiPActive(true);
+      syncChannel.post({ type: 'PIP_CHANGE', payload: { active: true } });
+    }
   };
 
   const handleToggleLoop = (targetVal?: boolean) => {
@@ -2450,7 +2547,7 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                 id="ctrl-seek-scrubber"
                 type="range"
                 min="0"
-                max={duration || 100}
+                max={duration > 0 ? duration : 100}
                 step="0.1"
                 value={isScrubbing ? scrubTime : currentTime}
                 onMouseDown={() => {
@@ -2466,18 +2563,12 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                 onChange={(e) => {
                   const val = parseFloat(e.target.value);
                   setScrubTime(val);
-                }}
-                onMouseUp={(e) => {
-                  const val = parseFloat((e.target as HTMLInputElement).value);
-                  isScrubbingRef.current = false;
-                  setIsScrubbing(false);
+                  setCurrentTime(val);
                   dispatchSeek(val);
                 }}
-                onTouchEnd={(e) => {
-                  const val = parseFloat((e.target as HTMLInputElement).value);
+                onPointerUp={() => {
                   isScrubbingRef.current = false;
                   setIsScrubbing(false);
-                  dispatchSeek(val);
                 }}
                 className="flex-1 h-1 accent-neutral-900 dark:accent-white bg-neutral-200 dark:bg-neutral-800 rounded-lg cursor-pointer"
               />
