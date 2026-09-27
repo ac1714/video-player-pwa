@@ -28,6 +28,7 @@ import {
   ExternalLink,
   ChevronUp,
   ChevronDown,
+  ChevronsUp,
   Info,
   Sliders,
   CheckSquare,
@@ -1132,6 +1133,35 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
     });
   };
 
+  const handleMoveQueueItemToTop = (fromIndex: number) => {
+    if (fromIndex <= 0 || fromIndex >= queue.length) return;
+    const movedId = queue[fromIndex];
+    setQueue((prev) => {
+      const copy = [...prev];
+      const [moved] = copy.splice(fromIndex, 1);
+      copy.unshift(moved);
+      syncChannel.post({ type: 'QUEUE_UPDATED', payload: { queue: copy } });
+      return copy;
+    });
+    const movedFile = mediaFiles.find((f) => f.id === movedId);
+    if (movedFile) {
+      setStatusNotice(`Moved "${movedFile.name}" to top of queue`);
+    }
+  };
+
+  const handleMoveToTopOfQueue = (trackId: string) => {
+    const file = mediaFiles.find((f) => f.id === trackId);
+    setQueue((prev) => {
+      const filtered = prev.filter((id) => id !== trackId);
+      const next = [trackId, ...filtered];
+      syncChannel.post({ type: 'QUEUE_UPDATED', payload: { queue: next } });
+      return next;
+    });
+    if (file) {
+      setStatusNotice(`Moved "${file.name}" to top of queue`);
+    }
+  };
+
   const handleReorderQueueDrag = (fromIndex: number, toIndex: number) => {
     if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || toIndex >= queue.length) return;
     setQueue((prev) => {
@@ -1937,6 +1967,16 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
                       {/* Right: Actions */}
                       <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-auto flex-wrap">
+                        {/* Move to Top of Queue */}
+                        <button
+                          onClick={() => handleMoveToTopOfQueue(file.id)}
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-800 text-xs font-semibold text-neutral-700 dark:text-neutral-300 transition cursor-pointer"
+                          title="Move to Top of Queue"
+                        >
+                          <ChevronsUp className="w-3.5 h-3.5" />
+                          <span>Top of Queue</span>
+                        </button>
+
                         {/* Add to Queue Button */}
                         <button
                           onClick={() => handleAddToQueue(file.id, false, false)}
@@ -2168,6 +2208,31 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                                 </div>
 
                                 <div className="flex items-center gap-0.5 shrink-0">
+                                  {/* Move to Top of Playlist */}
+                                  <button
+                                    disabled={idx === 0}
+                                    onClick={async () => {
+                                      const newOrder = [...pl.fileIds];
+                                      const [moved] = newOrder.splice(idx, 1);
+                                      newOrder.unshift(moved);
+                                      await updatePlaylist({ ...pl, fileIds: newOrder });
+                                      await loadDatabase();
+                                    }}
+                                    className="p-1 text-neutral-400 hover:text-neutral-900 dark:hover:text-white disabled:opacity-20 cursor-pointer"
+                                    title="Move track to top of playlist"
+                                  >
+                                    <ChevronsUp className="w-3 h-3" />
+                                  </button>
+
+                                  {/* Send to Top of Queue */}
+                                  <button
+                                    onClick={() => handleMoveToTopOfQueue(file.id)}
+                                    className="p-1 text-neutral-400 hover:text-neutral-900 dark:hover:text-white cursor-pointer"
+                                    title="Send to top of playback queue"
+                                  >
+                                    <ListPlus className="w-3 h-3" />
+                                  </button>
+
                                   <button
                                     disabled={idx === 0}
                                     onClick={async () => {
@@ -2394,6 +2459,17 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
                         {/* Re-order & Remove Controls */}
                         <div className="flex items-center gap-1 shrink-0">
+                          {/* Move to Top of Queue */}
+                          <button
+                            disabled={idx === 0}
+                            onClick={() => handleMoveQueueItemToTop(idx)}
+                            className="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-200 dark:hover:bg-neutral-800 disabled:opacity-20 cursor-pointer"
+                            title="Move to Top of Queue"
+                            aria-label="Move to Top of Queue"
+                          >
+                            <ChevronsUp className="w-3.5 h-3.5" />
+                          </button>
+
                           {/* Move Up */}
                           <button
                             disabled={idx === 0}
