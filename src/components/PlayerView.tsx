@@ -316,6 +316,16 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
               videoRef.current.currentTime = targetTime;
               setCurrentTime(targetTime);
             } catch {}
+            // Second-pass safeguard: re-verify once canplay fires to ensure browser didn't reset to 0
+            const onCanPlayOnce = () => {
+              if (videoRef.current && targetTime > 0 && Math.abs(videoRef.current.currentTime - targetTime) > 2) {
+                try {
+                  videoRef.current.currentTime = targetTime;
+                  setCurrentTime(targetTime);
+                } catch {}
+              }
+            };
+            videoRef.current.addEventListener('canplay', onCanPlayOnce, { once: true });
           }
           if (autoPlay) {
             const playPromise = videoRef.current.play();
@@ -366,10 +376,20 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         videoRef.current.src !== window.location.href
       ) {
         if (startTime !== undefined && startTime >= 0 && videoRef.current) {
-          try {
-            videoRef.current.currentTime = startTime;
-            setCurrentTime(startTime);
-          } catch {}
+          const seekTarget = startTime;
+          const performSeek = () => {
+            if (!videoRef.current) return;
+            try {
+              videoRef.current.currentTime = seekTarget;
+              setCurrentTime(seekTarget);
+            } catch {}
+          };
+          if (videoRef.current.readyState >= 1) {
+            performSeek();
+          } else {
+            videoRef.current.addEventListener('loadedmetadata', performSeek, { once: true });
+          }
+          videoRef.current.addEventListener('canplay', performSeek, { once: true });
         }
         if (autoPlay && videoRef.current.paused) {
           const p = videoRef.current.play();
@@ -505,10 +525,19 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           ) {
             const seekPos = startTime !== undefined && startTime >= 0 ? startTime : 0;
             if (videoRef.current) {
-              try {
-                videoRef.current.currentTime = seekPos;
-                setCurrentTime(seekPos);
-              } catch {}
+              const performSeek = () => {
+                if (!videoRef.current) return;
+                try {
+                  videoRef.current.currentTime = seekPos;
+                  setCurrentTime(seekPos);
+                } catch {}
+              };
+              if (videoRef.current.readyState >= 1) {
+                performSeek();
+              } else {
+                videoRef.current.addEventListener('loadedmetadata', performSeek, { once: true });
+              }
+              videoRef.current.addEventListener('canplay', performSeek, { once: true });
             }
             if (autoPlay && videoRef.current.paused) {
               const p = videoRef.current.play();
@@ -1415,9 +1444,12 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
             syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'paused' } });
           } else {
             isExternalActiveRef.current = false;
+            setIsExternalActive(false);
             const state = getActivePlaybackState();
             const targetId = msg.payload?.trackId || latestExternalTrackIdRef.current || state.trackId || currentTrackRef.current?.id;
-            const resumeTime = msg.payload?.currentTime ?? latestExternalTimeRef.current ?? state.lastTime ?? state.currentTime ?? 0;
+            const resumeTime = (msg.payload?.currentTime !== undefined && msg.payload.currentTime > 0)
+              ? msg.payload.currentTime
+              : (latestExternalTimeRef.current > 0 ? latestExternalTimeRef.current : (state.lastTime || state.currentTime || 0));
             if (targetId) {
               loadTrackById(targetId, true, undefined, resumeTime);
             }
@@ -1427,9 +1459,12 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         case 'PLAYER_DISCONNECTED':
           if (embedded && msg.payload?.isPopout) {
             isExternalActiveRef.current = false;
+            setIsExternalActive(false);
             const state = getActivePlaybackState();
             const targetId = msg.payload.trackId || state.trackId || currentTrackRef.current?.id;
-            const resumeTime = msg.payload.currentTime ?? state.lastTime ?? state.currentTime ?? 0;
+            const resumeTime = (msg.payload.currentTime !== undefined && msg.payload.currentTime > 0)
+              ? msg.payload.currentTime
+              : (state.lastTime || state.currentTime || 0);
             if (targetId) {
               loadTrackById(targetId, true, undefined, resumeTime);
             }
@@ -1672,7 +1707,25 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     if (!videoRef.current || videoRef.current.paused) {
       setIsPlaying(false);
       setIsBuffering(false);
+      const cur = videoRef.current?.currentTime || 0;
+      const dur = videoRef.current?.duration || duration;
+      syncChannel.post({
+        type: 'TIME_UPDATE',
+        payload: {
+          trackId: currentTrackRef.current?.id,
+          currentTime: cur,
+          duration: dur,
+        },
+      });
       syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'paused' } });
+      if (currentTrackRef.current?.id) {
+        saveActivePlaybackState({
+          trackId: currentTrackRef.current.id,
+          isPlaying: false,
+          lastTime: cur,
+          currentTime: cur,
+        });
+      }
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'paused';
       }
@@ -1683,6 +1736,29 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         currentTrackRef.current?.name,
         videoRef.current?.muted
       );
+    }
+  };
+
+  const onSeeked = () => {
+    if (embedded && isExternalActiveRef.current) return;
+    if (!videoRef.current) return;
+    const cur = videoRef.current.currentTime;
+    const dur = videoRef.current.duration || duration;
+    setCurrentTime(cur);
+    syncChannel.post({
+      type: 'TIME_UPDATE',
+      payload: {
+        trackId: currentTrackRef.current?.id,
+        currentTime: cur,
+        duration: dur,
+      },
+    });
+    if (currentTrackRef.current?.id) {
+      saveActivePlaybackState({
+        trackId: currentTrackRef.current.id,
+        lastTime: cur,
+        currentTime: cur,
+      });
     }
   };
 
@@ -1770,24 +1846,76 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
             {onBringBack && (
               <button
                 onClick={() => {
-                  const state = getActivePlaybackState();
-                  const targetId = latestExternalTrackIdRef.current || state.trackId || currentTrackRef.current?.id;
-                  const resumeTime = latestExternalTimeRef.current || state.lastTime || state.currentTime || 0;
-                  
-                  // Pause and close external popout if open
+                  let targetId = latestExternalTrackIdRef.current || currentTrackRef.current?.id;
+                  let targetTime = 0;
+
+                  // 1. Direct window inspection if popout is open (instant exact millisecond accuracy)
                   const popout = syncChannel.getPopoutWindow();
                   if (popout && !popout.closed) {
-                    try { popout.close(); } catch {}
+                    try {
+                      const popoutVid = popout.document?.getElementById('pwa-main-video-element') as HTMLVideoElement | null;
+                      if (popoutVid && Number.isFinite(popoutVid.currentTime) && popoutVid.currentTime > 0) {
+                        targetTime = popoutVid.currentTime;
+                      }
+                      const popoutTrackId = (popout as any).__PWA_ACTIVE_TRACK_ID__;
+                      if (popoutTrackId) {
+                        targetId = popoutTrackId;
+                      }
+                    } catch {}
+                  }
+
+                  // 2. Fallback to latest external time ref from TIME_UPDATE broadcasts
+                  if (targetTime <= 0 && latestExternalTimeRef.current && latestExternalTimeRef.current > 0) {
+                    targetTime = latestExternalTimeRef.current;
+                  }
+
+                  // 3. Fallback to persisted state in localStorage
+                  const state = getActivePlaybackState();
+                  if (targetTime <= 0) {
+                    if (state.lastTime && state.lastTime > 0) {
+                      targetTime = state.lastTime;
+                    } else if (state.currentTime && state.currentTime > 0) {
+                      targetTime = state.currentTime;
+                    }
+                  }
+                  if (!targetId) {
+                    targetId = state.trackId || currentTrackRef.current?.id;
+                  }
+
+                  // Pause and close external popout if open
+                  if (popout && !popout.closed) {
+                    try {
+                      const popoutVid = popout.document?.getElementById('pwa-main-video-element') as HTMLVideoElement | null;
+                      popoutVid?.pause();
+                      popout.close();
+                    } catch {}
                   }
                   syncChannel.setPopoutWindow(null);
-                  syncChannel.post({
-                    type: 'BRING_PLAYBACK_HERE',
-                    payload: { trackId: targetId, currentTime: resumeTime },
-                  });
+
+                  // Update global active playback state
+                  if (targetId) {
+                    saveActivePlaybackState({
+                      trackId: targetId,
+                      isPlaying: true,
+                      lastTime: targetTime,
+                      currentTime: targetTime,
+                    });
+                    if (typeof window !== 'undefined') {
+                      (window as any).__PWA_ACTIVE_TRACK_TIME__ = targetTime;
+                      (window as any).__PWA_ACTIVE_TRACK_ID__ = targetId;
+                    }
+                  }
 
                   isExternalActiveRef.current = false;
+                  setIsExternalActive(false);
+
+                  syncChannel.post({
+                    type: 'BRING_PLAYBACK_HERE',
+                    payload: { trackId: targetId, currentTime: targetTime },
+                  });
+
                   if (targetId) {
-                    loadTrackById(targetId, true, undefined, resumeTime);
+                    loadTrackById(targetId, true, undefined, targetTime);
                   }
                   onBringBack();
                 }}
@@ -1810,6 +1938,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         onLoadedMetadata={onLoadedMetadata}
         onDurationChange={onDurationChange}
         onTimeUpdate={onTimeUpdate}
+        onSeeked={onSeeked}
         onPlay={onPlay}
         onPause={onPause}
         onWaiting={onWaiting}

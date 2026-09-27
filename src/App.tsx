@@ -87,7 +87,9 @@ export default function App() {
         setViewMode('split');
         const state = getActivePlaybackState();
         const targetTrackId = msg.payload?.trackId || latestTrackIdRef.current || state.trackId || activeTrackId;
-        const resumeTime = msg.payload?.currentTime ?? latestTimeRef.current ?? state.lastTime ?? state.currentTime ?? 0;
+        const resumeTime = (msg.payload?.currentTime !== undefined && msg.payload.currentTime > 0)
+          ? msg.payload.currentTime
+          : (latestTimeRef.current > 0 ? latestTimeRef.current : (state.lastTime || state.currentTime || 0));
         if (targetTrackId) {
           saveActivePlaybackState({ trackId: targetTrackId, isPlaying: true, lastTime: resumeTime });
           setTimeout(() => {
@@ -106,19 +108,11 @@ export default function App() {
         setViewMode('split');
         const state = getActivePlaybackState();
         const targetTrackId = msg.payload?.trackId || latestTrackIdRef.current || state.trackId || activeTrackId;
-        const resumeTime = msg.payload?.currentTime ?? latestTimeRef.current ?? state.lastTime ?? state.currentTime ?? 0;
+        const resumeTime = (msg.payload?.currentTime !== undefined && msg.payload.currentTime > 0)
+          ? msg.payload.currentTime
+          : (latestTimeRef.current > 0 ? latestTimeRef.current : (state.lastTime || state.currentTime || 0));
         if (targetTrackId) {
           saveActivePlaybackState({ trackId: targetTrackId, isPlaying: true, lastTime: resumeTime });
-          setTimeout(() => {
-            syncChannel.post({
-              type: 'LOAD_TRACK',
-              payload: {
-                trackId: targetTrackId,
-                autoPlay: true,
-                currentTime: resumeTime,
-              },
-            });
-          }, 80);
         }
       }
     });
@@ -209,13 +203,6 @@ export default function App() {
                     onBringBack={() => {
                       setIsExternalActive(false);
                       setViewMode('split');
-                      const state = getActivePlaybackState();
-                      const targetTrackId = latestTrackIdRef.current || state.trackId || activeTrackId;
-                      const resumeTime = latestTimeRef.current ?? state.lastTime ?? state.currentTime ?? 0;
-                      syncChannel.post({
-                        type: 'BRING_PLAYBACK_HERE',
-                        payload: { trackId: targetTrackId, currentTime: resumeTime },
-                      });
                     }}
                   />
                 </div>
