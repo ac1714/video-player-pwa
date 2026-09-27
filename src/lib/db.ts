@@ -551,6 +551,7 @@ export async function getMediaFile(id: string): Promise<MediaFile | undefined> {
 }
 
 export async function deleteMediaFile(id: string): Promise<void> {
+  memoryFileRegistry.delete(id);
   await deleteBinaryBlob(id);
   const db = await getDB();
   return new Promise((resolve, reject) => {

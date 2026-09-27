@@ -263,12 +263,19 @@ async function scanDirectory(
   const subDirs: FileSystemDirectoryHandle[] = [];
 
   try {
-    // Robust async iterator handling across different browser implementations
-    const entriesIterator = typeof (dirHandle as any).values === 'function'
+    // Robust async iterator handling across different browser implementations:
+    // Some implementations yield FileSystemHandle directly;
+    // others yield [name, FileSystemHandle] tuples from entries() or [Symbol.asyncIterator]().
+    const iterator = typeof (dirHandle as any).values === 'function'
       ? (dirHandle as any).values()
+      : typeof (dirHandle as any).entries === 'function'
+      ? (dirHandle as any).entries()
       : (dirHandle as any)[Symbol.asyncIterator]();
 
-    for await (const entry of entriesIterator) {
+    for await (const rawItem of iterator) {
+      const entry: FileSystemHandle = Array.isArray(rawItem) ? rawItem[1] : rawItem;
+      if (!entry || !entry.kind) continue;
+
       if (entry.kind === 'file') {
         const fileHandle = entry as FileSystemFileHandle;
         if (isVideoFile(fileHandle.name)) {
@@ -361,7 +368,16 @@ export async function relinkFolderHandles(dirHandle: FileSystemDirectoryHandle):
   const updatedTargets: MediaFile[] = [];
 
   async function traverse(currentDir: FileSystemDirectoryHandle, currentPath: string = '') {
-    for await (const entry of (currentDir as any).values()) {
+    const iterator = typeof (currentDir as any).values === 'function'
+      ? (currentDir as any).values()
+      : typeof (currentDir as any).entries === 'function'
+      ? (currentDir as any).entries()
+      : (currentDir as any)[Symbol.asyncIterator]();
+
+    for await (const rawItem of iterator) {
+      const entry: FileSystemHandle = Array.isArray(rawItem) ? rawItem[1] : rawItem;
+      if (!entry || !entry.kind) continue;
+
       if (entry.kind === 'file') {
         const fileHandle = entry as FileSystemFileHandle;
         const relPath = currentPath ? `${currentPath}/${fileHandle.name}` : fileHandle.name;
@@ -613,14 +629,13 @@ export function pickFilesToRelink(
 export async function pickFolderAndIngest(
   onProgress?: (batch: MediaFile[], totalCollected: number) => void
 ): Promise<{ count: number; files: MediaFile[] }> {
-  if ('showDirectoryPicker' in window) {
+  if ('showDirectoryPicker' in window && !isInsideIframe()) {
     try {
+      // Calling showDirectoryPicker with NO options to prevent browser rejection
       // @ts-expect-error - showDirectoryPicker on window
-      const dirHandle: FileSystemDirectoryHandle = await window.showDirectoryPicker({
-        mode: 'read',
-      });
+      const dirHandle: FileSystemDirectoryHandle = await window.showDirectoryPicker();
 
-      await saveDirectoryHandle(dirHandle.name, dirHandle);
+      await saveDirectoryHandle(dirHandle.name, dirHandle).catch(() => {});
 
       const collected: MediaFile[] = [];
       await scanDirectory(dirHandle, collected, '', undefined, onProgress);
@@ -633,7 +648,8 @@ export async function pickFolderAndIngest(
       if (err instanceof Error && err.name === 'AbortError') {
         return { count: 0, files: [] };
       }
-      console.warn('showDirectoryPicker failed or restricted, falling back to input method:', err);
+      console.warn('showDirectoryPicker failed, delegating to caller:', err);
+      throw err;
     }
   }
 

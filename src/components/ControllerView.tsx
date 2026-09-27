@@ -29,7 +29,6 @@ import {
   ChevronUp,
   ChevronDown,
   Info,
-  Sparkles,
   Sliders,
   CheckSquare,
   Square,
@@ -78,7 +77,6 @@ import { syncChannel, getPopoutUrl } from '../lib/syncChannel';
 import {
   pickFolderAndIngest,
   pickFilesAndIngest,
-  generateSyntheticTestClip,
   ingestFileList,
   ingestDroppedItems,
   relinkFolderHandles,
@@ -208,7 +206,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   const [newPlaylistName, setNewPlaylistName] = useState<string>('');
   const [editingPlaylistId, setEditingPlaylistId] = useState<string | null>(null);
   const [editingPlaylistName, setEditingPlaylistName] = useState<string>('');
-  const [isGeneratingDemo, setIsGeneratingDemo] = useState<boolean>(false);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
 
   // Storage and cache management
@@ -351,14 +348,26 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
     try {
       let [files, lists] = await Promise.all([getAllMediaFiles(), getAllPlaylists()]);
 
-      // Automatically generate a test clip on first launch if empty so playback is immediately testable
-      if (files.length === 0) {
-        try {
-          const sample = await generateSyntheticTestClip('Clip 1: Sample Video', 6);
-          files = [sample];
-        } catch (e) {
-          console.warn('Initial demo clip generation skipped:', e);
+      // Clean up and purge any synthetic test clips so the catalog is clean
+      const isSampleClip = (name: string) => {
+        const lower = name.toLowerCase();
+        return (
+          lower.includes('sample video') ||
+          lower.startsWith('clip 1:') ||
+          lower.startsWith('clip_1:') ||
+          lower.startsWith('clip 1') ||
+          lower.startsWith('clip_1')
+        );
+      };
+
+      const leftoverSamples = files.filter((f) => isSampleClip(f.name));
+      if (leftoverSamples.length > 0) {
+        for (const sample of leftoverSamples) {
+          try {
+            await deleteMediaFile(sample.id);
+          } catch {}
         }
+        files = files.filter((f) => !isSampleClip(f.name));
       }
 
       setMediaFiles(files);
@@ -1061,9 +1070,9 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   // Ingestion Handlers
   const handleIngestFolder = async () => {
     // 1. Try native File System Access API first for permanent handle storage
-    if ('showDirectoryPicker' in window) {
+    if ('showDirectoryPicker' in window && !isInsideIframe()) {
       try {
-        setStatusNotice('Scanning folder...');
+        setStatusNotice('Opening folder...');
         const result = await pickFolderAndIngest(handleProgressiveFiles);
         if (result.count > 0) {
           await loadDatabase();
@@ -1073,8 +1082,8 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
             dispatchLoadTrack(result.files[0].id, false);
           }
           return;
-        } else if (result.count === 0 && result.files.length === 0) {
-          setStatusNotice(null);
+        } else {
+          setStatusNotice('No video files found in selected folder.');
           return;
         }
       } catch (err: any) {
@@ -1082,7 +1091,7 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
           setStatusNotice(null);
           return;
         }
-        console.warn('showDirectoryPicker failed or restricted, falling back to input method:', err);
+        console.warn('showDirectoryPicker failed, attempting file input fallback:', err);
       }
     }
 
@@ -1206,23 +1215,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
     }
   };
 
-  const handleGenerateSample = async () => {
-    try {
-      setIsGeneratingDemo(true);
-      const demoNumber = mediaFiles.length + 1;
-      const file = await generateSyntheticTestClip(`Clip ${demoNumber}`, 6);
-      await loadDatabase();
-      setStatusNotice(`Added "${file.name}".`);
-      if (!activeTrackId) {
-        dispatchLoadTrack(file.id, false);
-      }
-    } catch (err) {
-      console.error('Demo generation error:', err);
-      setStatusNotice('Could not generate sample.');
-    } finally {
-      setIsGeneratingDemo(false);
-    }
-  };
 
   // Inspector Dialog
   const openInspector = async (file: MediaFile) => {
@@ -1344,7 +1336,7 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         type="file"
         multiple
         {...({ webkitdirectory: '', directory: '', mozdirectory: '' } as any)}
-        className="sr-only fixed -top-96 -left-96 opacity-0 pointer-events-none"
+        className="sr-only fixed -top-96 -left-96 opacity-0"
         tabIndex={-1}
         aria-hidden="true"
         onChange={handleFolderInputChange}
@@ -1513,15 +1505,7 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
               <span>Import Files</span>
             </button>
 
-            <button
-              id="generate-sample-btn"
-              onClick={handleGenerateSample}
-              disabled={isGeneratingDemo}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-900 hover:bg-neutral-200 dark:hover:bg-neutral-800 border border-neutral-200 dark:border-neutral-800 text-xs font-semibold text-neutral-700 dark:text-neutral-300 transition cursor-pointer disabled:opacity-50"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>{isGeneratingDemo ? 'Generating...' : 'Add Sample Clip'}</span>
-            </button>
+
 
             {/* Reauthorize Access Button (when permission needs elevation) */}
             {needsDirectoryReauth && (
@@ -1721,7 +1705,7 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                   {searchQuery ? 'No matching videos found' : 'Your video catalog is empty'}
                 </p>
                 <p className="text-xs text-neutral-500 mb-5 max-w-sm mx-auto">
-                  Import a local folder, select video files, or add a demo clip to get started.
+                  Import a local folder, select video files, or drag and drop videos to get started.
                 </p>
                 <div className="flex flex-wrap items-center justify-center gap-2.5">
                   <button
@@ -1737,14 +1721,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                   >
                     <FilePlus className="w-3.5 h-3.5" />
                     <span>Import Files</span>
-                  </button>
-                  <button
-                    onClick={handleGenerateSample}
-                    disabled={isGeneratingDemo}
-                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-neutral-100 dark:bg-neutral-900 hover:bg-neutral-200 dark:hover:bg-neutral-800 border border-neutral-200 dark:border-neutral-800 text-xs font-semibold text-neutral-700 dark:text-neutral-300 transition cursor-pointer disabled:opacity-50"
-                  >
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>Generate Clip</span>
                   </button>
                 </div>
               </div>
