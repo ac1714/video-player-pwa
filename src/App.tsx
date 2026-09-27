@@ -135,9 +135,17 @@ export default function App() {
         ? latestTimeRef.current
         : (window as any).__PWA_ACTIVE_TRACK_TIME__ || getActivePlaybackState().lastTime || 0;
 
-    const targetId = trackIdToOpen || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__;
+    const targetId = trackIdToOpen || activeTrackId || latestTrackIdRef.current || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId;
+    const mem = targetId ? getMemoryFile(targetId) : undefined;
+    const activeBlob = mem?.file || (window as any).__PWA_ACTIVE_MEDIA_BLOB__;
 
-    // Pause embedded preview video to prevent duplicate playback sound
+    // 1. Open new tab FIRST while user click gesture token is guaranteed active (avoids popup blockers)
+    const res = syncChannel.openPopoutWindow(targetId, liveTime, activeBlob);
+    if (res.win) {
+      syncChannel.registerPopoutWindow(res.win);
+    }
+
+    // 2. Pause embedded preview video AFTER opening new tab so gesture isn't consumed beforehand
     if (videoEl && !videoEl.paused) {
       try {
         videoEl.pause();
@@ -148,13 +156,7 @@ export default function App() {
       saveActivePlaybackState({ trackId: targetId, isPlaying: true, lastTime: liveTime, currentTime: liveTime });
       (window as any).__PWA_ACTIVE_TRACK_ID__ = targetId;
       (window as any).__PWA_ACTIVE_TRACK_TIME__ = liveTime;
-      const mem = getMemoryFile(targetId);
-      const activeBlob = mem?.file || (window as any).__PWA_ACTIVE_MEDIA_BLOB__;
       syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: targetId, autoPlay: true, currentTime: liveTime, blob: activeBlob } });
-    }
-    const res = syncChannel.openPopoutWindow(targetId, liveTime);
-    if (res.win) {
-      syncChannel.registerPopoutWindow(res.win);
     }
     setIsExternalActive(true);
   };

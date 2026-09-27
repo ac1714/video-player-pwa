@@ -171,10 +171,18 @@ class SyncChannelManager {
 
     const urlString = getPopoutUrl(trackId, currentTime);
 
+    // CRITICAL: Call window.open immediately while user click gesture token is fully active!
+    let win: Window | null = null;
+    try {
+      win = window.open(urlString, '_blank');
+    } catch (e) {
+      console.warn('Direct window.open failed:', e);
+    }
+
     // Save playback state to localStorage so new tab can access it immediately
     if (trackId) {
       try {
-        saveActivePlaybackState({ trackId, isPlaying: true, lastTime: currentTime || 0 });
+        saveActivePlaybackState({ trackId, isPlaying: true, lastTime: currentTime || 0, currentTime: currentTime || 0 });
       } catch {}
     }
 
@@ -183,18 +191,14 @@ class SyncChannelManager {
       const activeBlob = blob || (trackId ? getMemoryFile(trackId)?.file : undefined);
       if (activeBlob) {
         (window as any).__PWA_ACTIVE_MEDIA_BLOB__ = activeBlob;
+      }
+      if (trackId) {
         (window as any).__PWA_ACTIVE_TRACK_ID__ = trackId;
-        (window as any).__PWA_ACTIVE_TRACK_TIME__ = currentTime || 0;
+      }
+      if (currentTime !== undefined) {
+        (window as any).__PWA_ACTIVE_TRACK_TIME__ = currentTime;
       }
     } catch {}
-
-    // Open clean new tab
-    let win: Window | null = null;
-    try {
-      win = window.open(urlString, '_blank');
-    } catch (e) {
-      console.warn('Direct window.open failed:', e);
-    }
 
     // If programmatic window.open was suppressed (e.g. sandbox or strict popup blocker), trigger anchor navigation
     if (!win && typeof document !== 'undefined') {

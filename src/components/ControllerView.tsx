@@ -922,17 +922,20 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   };
 
   const handleOpenPopoutWindow = (trackIdToOpen?: string) => {
-    const targetId = trackIdToOpen || activeTrackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
-    const targetTime = currentTimeRef.current || currentTime || 0;
+    const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
+    const targetTime = (videoEl && Number.isFinite(videoEl.currentTime) && videoEl.currentTime > 0)
+      ? videoEl.currentTime
+      : (currentTimeRef.current || currentTime || 0);
+    const targetId = trackIdToOpen || activeTrackIdRef.current || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
+
     if (onOpenPlayerInNewTab) {
       onOpenPlayerInNewTab(targetId, targetTime);
       return;
     }
-    if (targetId) {
-      saveActivePlaybackState({ trackId: targetId, isPlaying: true, lastTime: targetTime, currentTime: targetTime });
-      syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: targetId, autoPlay: true, currentTime: targetTime } });
-    }
-    const res = syncChannel.openPopoutWindow(targetId, targetTime);
+    const mem = targetId ? getMemoryFile(targetId) : undefined;
+    const fileObj = mediaFiles.find((f) => f.id === targetId);
+    const blob = mem?.file || fileObj?.blobFallback;
+    const res = syncChannel.openPopoutWindow(targetId, targetTime, blob);
     if (res.win) {
       setStatusNotice('Opened video player in new tab');
       setPopoutBlockedUrl(null);
@@ -1607,33 +1610,29 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
           {/* Pop Out to New Tab Link */}
           <a
             id="open-player-window-btn"
-            href={getPopoutUrl(activeTrackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined), currentTime)}
+            href={getPopoutUrl(
+              activeTrackIdRef.current || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined),
+              currentTimeRef.current || currentTime
+            )}
             target="_blank"
             rel="opener"
+            onMouseEnter={(e) => {
+              const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
+              const cur = videoEl && Number.isFinite(videoEl.currentTime) ? videoEl.currentTime : (currentTimeRef.current || currentTime || 0);
+              const tid = activeTrackIdRef.current || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
+              e.currentTarget.href = getPopoutUrl(tid, cur);
+            }}
             onClick={(e) => {
               e.preventDefault();
-              const targetId = activeTrackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
-              const targetTime = currentTimeRef.current || currentTime || 0;
+              const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
+              const targetTime = videoEl && Number.isFinite(videoEl.currentTime) && videoEl.currentTime > 0
+                ? videoEl.currentTime
+                : (currentTimeRef.current || currentTime || (window as any).__PWA_ACTIVE_TRACK_TIME__ || 0);
+              const targetId = activeTrackIdRef.current || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
               if (onOpenPlayerInNewTab) {
                 onOpenPlayerInNewTab(targetId, targetTime);
               } else {
-                if (targetId) {
-                  const mem = getMemoryFile(targetId);
-                  const fileObj = mediaFiles.find((f) => f.id === targetId);
-                  const blob = mem?.file || fileObj?.blobFallback;
-                  if (blob && typeof window !== 'undefined') {
-                    (window as any).__PWA_ACTIVE_TRACK_ID__ = targetId;
-                    (window as any).__PWA_ACTIVE_MEDIA_BLOB__ = blob;
-                    (window as any).__PWA_ACTIVE_TRACK_TIME__ = currentTime;
-                    registerMemoryFile(targetId, blob);
-                  }
-                  saveActivePlaybackState({ trackId: targetId, isPlaying: true, lastTime: currentTime });
-                  syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: targetId, autoPlay: true, blob, currentTime } });
-                }
-                const res = syncChannel.openPopoutWindow(targetId, currentTime);
-                if (res.win) {
-                  syncChannel.registerPopoutWindow(res.win);
-                }
+                handleOpenPopoutWindow(targetId);
               }
               setStatusNotice('Opening dedicated video player in a new browser tab...');
             }}
@@ -2071,23 +2070,15 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                           rel="opener"
                           onClick={(e) => {
                             e.preventDefault();
-                            const targetTime = file.id === activeTrackId ? (currentTimeRef.current || currentTime || 0) : 0;
+                            const isThisActive = file.id === (activeTrackIdRef.current || activeTrackId || (typeof window !== 'undefined' ? (window as any).__PWA_ACTIVE_TRACK_ID__ : undefined));
+                            const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
+                            const targetTime = isThisActive
+                              ? ((videoEl && Number.isFinite(videoEl.currentTime) && videoEl.currentTime > 0) ? videoEl.currentTime : (currentTimeRef.current || currentTime || 0))
+                              : 0;
                             if (onOpenPlayerInNewTab) {
                               onOpenPlayerInNewTab(file.id, targetTime);
                             } else {
-                              const mem = getMemoryFile(file.id);
-                              const blob = mem?.file || file.blobFallback;
-                              if (blob && typeof window !== 'undefined') {
-                                (window as any).__PWA_ACTIVE_TRACK_ID__ = file.id;
-                                (window as any).__PWA_ACTIVE_MEDIA_BLOB__ = blob;
-                                registerMemoryFile(file.id, blob);
-                              }
-                              saveActivePlaybackState({ trackId: file.id, isPlaying: true });
-                              syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: file.id, autoPlay: true, blob } });
-                              const res = syncChannel.openPopoutWindow(file.id, 0, blob);
-                              if (res.win) {
-                                syncChannel.registerPopoutWindow(res.win);
-                              }
+                              handleOpenPopoutWindow(file.id);
                             }
                             setStatusNotice(`Opening "${file.name}" in new tab...`);
                           }}
@@ -2675,33 +2666,29 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
               {/* Open in New Tab Button */}
               <a
                 id="ctrl-popout-bottom-btn"
-                href={getPopoutUrl(activeTrackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined), currentTime)}
+                href={getPopoutUrl(
+                  activeTrackIdRef.current || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined),
+                  currentTimeRef.current || currentTime
+                )}
                 target="_blank"
                 rel="opener"
+                onMouseEnter={(e) => {
+                  const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
+                  const cur = videoEl && Number.isFinite(videoEl.currentTime) ? videoEl.currentTime : (currentTimeRef.current || currentTime || 0);
+                  const tid = activeTrackIdRef.current || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
+                  e.currentTarget.href = getPopoutUrl(tid, cur);
+                }}
                 onClick={(e) => {
                   e.preventDefault();
-                  const targetId = activeTrackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
-                  const targetTime = currentTimeRef.current || currentTime || 0;
+                  const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
+                  const targetTime = videoEl && Number.isFinite(videoEl.currentTime) && videoEl.currentTime > 0
+                    ? videoEl.currentTime
+                    : (currentTimeRef.current || currentTime || (window as any).__PWA_ACTIVE_TRACK_TIME__ || 0);
+                  const targetId = activeTrackIdRef.current || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__ || getActivePlaybackState().trackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
                   if (onOpenPlayerInNewTab) {
                     onOpenPlayerInNewTab(targetId, targetTime);
                   } else {
-                    if (targetId) {
-                      const mem = getMemoryFile(targetId);
-                      const fileObj = mediaFiles.find((f) => f.id === targetId);
-                      const blob = mem?.file || fileObj?.blobFallback;
-                      if (blob && typeof window !== 'undefined') {
-                        (window as any).__PWA_ACTIVE_TRACK_ID__ = targetId;
-                        (window as any).__PWA_ACTIVE_MEDIA_BLOB__ = blob;
-                        (window as any).__PWA_ACTIVE_TRACK_TIME__ = currentTime;
-                        registerMemoryFile(targetId, blob);
-                      }
-                      saveActivePlaybackState({ trackId: targetId, isPlaying: true, lastTime: currentTime });
-                      syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: targetId, autoPlay: true, blob, currentTime } });
-                    }
-                    const res = syncChannel.openPopoutWindow(targetId, currentTime);
-                    if (res.win) {
-                      syncChannel.registerPopoutWindow(res.win);
-                    }
+                    handleOpenPopoutWindow(targetId);
                   }
                   setStatusNotice('Opening video player in new tab...');
                 }}
