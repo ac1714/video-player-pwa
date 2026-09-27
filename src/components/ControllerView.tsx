@@ -98,6 +98,7 @@ import {
   setLoopSetting,
   getStoredQueue,
   setStoredQueue,
+  setLastPlaybackTime,
 } from '../lib/localStorageState';
 import {
   openPipControls,
@@ -735,10 +736,14 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   }, [queue, activeTrackId]);
 
   // Command Dispatches & Direct Permission Elevation
-  const dispatchLoadTrack = async (trackId: string, autoPlay: boolean = true) => {
+  const dispatchLoadTrack = async (trackId: string, autoPlay: boolean = true, startTime: number = 0) => {
     setActiveTrackIdState(trackId);
     setActiveTrack(trackId);
     activeTrackIdRef.current = trackId;
+
+    // Reset saved playback position to 0 so fresh loads never resume old positions
+    setLastPlaybackTime(startTime);
+    saveActivePlaybackState({ trackId, isPlaying: autoPlay, lastTime: startTime, currentTime: startTime });
 
     const mem = getMemoryFile(trackId);
     const targetFile = mediaFiles.find((f) => f.id === trackId);
@@ -752,12 +757,12 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         if (storedDur > 0) initDur = storedDur;
       } catch {}
     }
-    setCurrentTime(0);
-    setScrubTime(0);
+    setCurrentTime(startTime);
+    setScrubTime(startTime);
     setDuration(initDur);
     isScrubbingRef.current = false;
     setIsScrubbing(false);
-    updatePipControlsState(0, initDur, autoPlay, targetFile?.name, isMuted);
+    updatePipControlsState(startTime, initDur, autoPlay, targetFile?.name, isMuted);
 
     if (!availableBlob) {
       availableBlob = await retrieveBinaryBlob(trackId);
@@ -842,6 +847,7 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
       payload: {
         trackId,
         autoPlay,
+        currentTime: startTime,
         playlistId: activePlaylistId || undefined,
         blob: availableBlob,
       },
@@ -1019,10 +1025,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   handlePlayNextRef.current = handlePlayNext;
 
   const handlePlayPrev = () => {
-    if (currentTime > 3) {
-      dispatchSeek(0);
-      return;
-    }
     const currentQueue = queueRef.current;
     if (currentQueue.length === 0) {
       dispatchSeek(0);
@@ -1030,9 +1032,9 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
     }
     const curIdx = currentQueue.indexOf(activeTrackIdRef.current || '');
     if (curIdx > 0) {
-      dispatchLoadTrack(currentQueue[curIdx - 1], true);
+      dispatchLoadTrack(currentQueue[curIdx - 1], true, 0);
     } else if (isLoopingRef.current) {
-      dispatchLoadTrack(currentQueue[currentQueue.length - 1], true);
+      dispatchLoadTrack(currentQueue[currentQueue.length - 1], true, 0);
     } else {
       dispatchSeek(0);
     }

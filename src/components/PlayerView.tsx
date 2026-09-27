@@ -230,8 +230,6 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       const targetTime =
         startTime !== undefined && startTime >= 0
           ? startTime
-          : getActivePlaybackState().trackId === fileRecord.id
-          ? getActivePlaybackState().lastTime || getActivePlaybackState().currentTime || 0
           : 0;
 
       // If this exact track is already loaded in the video element, do NOT recreate URL or reset currentTime to 0!
@@ -242,7 +240,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         videoRef.current.src !== window.location.href &&
         !videoRef.current.ended
       ) {
-        if (targetTime > 0 && videoRef.current) {
+        if (videoRef.current) {
           try {
             videoRef.current.currentTime = targetTime;
             setCurrentTime(targetTime);
@@ -465,17 +463,18 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           }
           registerMemoryFile(trackId, mediaBlob);
 
-          // If the requested track is already loaded in the video element, simply unpause if needed
+          // If the requested track is already loaded in the video element, reset position and unpause if needed
           if (
             (currentTrackRef.current?.id === trackId || lastLoadedTrackIdRef.current === trackId) &&
             videoRef.current?.src &&
             videoRef.current.src !== '' &&
             videoRef.current.src !== window.location.href
           ) {
-            if (startTime !== undefined && startTime >= 0 && videoRef.current) {
+            const seekPos = startTime !== undefined && startTime >= 0 ? startTime : 0;
+            if (videoRef.current) {
               try {
-                videoRef.current.currentTime = startTime;
-                setCurrentTime(startTime);
+                videoRef.current.currentTime = seekPos;
+                setCurrentTime(seekPos);
               } catch {}
             }
             if (autoPlay && videoRef.current.paused) {
@@ -962,40 +961,37 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     syncChannel.post({ type: 'PIP_CHANGE', payload: { active: opened } });
   }, [currentTime, duration, volume, isMuted]);
 
-  // Previous and Next Track Handlers for pop-out tab
+  // Previous and Next Track Handlers for pop-out tab - Always start at beginning (0s)
   const handlePlayPrev = useCallback(async () => {
     // 1. Post to syncChannel so ControllerView handles it if connected
     syncChannel.post({ type: 'PREV_TRACK' });
 
-    // 2. If more than 3 seconds in, seek to beginning (standard player convention)
-    if (videoRef.current && videoRef.current.currentTime > 3) {
-      videoRef.current.currentTime = 0;
-      return;
-    }
-
-    // 3. Fallback / autonomous handling if ControllerView is not active:
+    // 2. Fallback / autonomous handling if ControllerView is not active:
     const queue = getStoredQueue();
     const currentId = currentTrackRef.current?.id;
     if (queue.length > 0) {
       const curIdx = currentId ? queue.indexOf(currentId) : -1;
       let prevIdx = curIdx > 0 ? curIdx - 1 : queue.length - 1;
       const prevId = queue[prevIdx];
-      if (prevId && prevId !== currentId) {
-        loadTrackById(prevId, true);
+      if (prevId) {
+        loadTrackById(prevId, true, undefined, 0);
         return;
       }
     }
 
-    // 4. If queue is empty, check all media files in database:
+    // 3. If queue is empty, check all media files in database:
     try {
       const allFiles = await getAllMediaFiles();
       if (allFiles.length > 1) {
         const curIdx = currentId ? allFiles.findIndex((f) => f.id === currentId) : -1;
         let prevIdx = curIdx > 0 ? curIdx - 1 : allFiles.length - 1;
         const target = allFiles[prevIdx];
-        if (target && target.id !== currentId) {
-          loadTrackById(target.id, true);
+        if (target) {
+          loadTrackById(target.id, true, undefined, 0);
         }
+      } else if (videoRef.current) {
+        videoRef.current.currentTime = 0;
+        setCurrentTime(0);
       }
     } catch {}
   }, [loadTrackById]);
@@ -1011,8 +1007,8 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       const curIdx = currentId ? queue.indexOf(currentId) : -1;
       let nextIdx = curIdx + 1 < queue.length ? curIdx + 1 : 0;
       const nextId = queue[nextIdx];
-      if (nextId && nextId !== currentId) {
-        loadTrackById(nextId, true);
+      if (nextId) {
+        loadTrackById(nextId, true, undefined, 0);
         return;
       }
     }
@@ -1024,8 +1020,8 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         const curIdx = currentId ? allFiles.findIndex((f) => f.id === currentId) : -1;
         let nextIdx = curIdx + 1 < allFiles.length ? curIdx + 1 : 0;
         const target = allFiles[nextIdx];
-        if (target && target.id !== currentId) {
-          loadTrackById(target.id, true);
+        if (target) {
+          loadTrackById(target.id, true, undefined, 0);
         }
       }
     } catch {}
@@ -1302,7 +1298,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       switch (msg.type) {
         case 'LOAD_TRACK':
           if (embedded && isExternalActiveRef.current) return;
-          loadTrackById(msg.payload.trackId, msg.payload.autoPlay ?? true, msg.payload.blob, msg.payload.currentTime);
+          loadTrackById(msg.payload.trackId, msg.payload.autoPlay ?? true, msg.payload.blob, msg.payload.currentTime ?? 0);
           break;
 
         case 'PROVIDE_TRACK_DATA': {
