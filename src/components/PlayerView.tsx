@@ -26,6 +26,10 @@ import {
   Repeat,
   FolderOpen,
   Expand,
+  SkipBack,
+  SkipForward,
+  RotateCcw,
+  RotateCw,
 } from 'lucide-react';
 import { MediaFile, SyncMessage } from '../types';
 import { getMediaFile, getMemoryFile, saveMediaFile, registerMemoryFile, getAllDirectoryHandles, getAllMediaFiles, retrieveBinaryBlob, persistBinaryBlob } from '../lib/db';
@@ -38,6 +42,7 @@ import {
   setVolumeState,
   setLastPlaybackTime,
   setLoopSetting,
+  getStoredQueue,
 } from '../lib/localStorageState';
 
 interface PlayerViewProps {
@@ -60,6 +65,8 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
   const lastLoadedTrackIdRef = useRef<string | null>(null);
   const isLoadingTrackRef = useRef<boolean>(false);
   const hasMountedRef = useRef<boolean>(false);
+  const handlePlayPrevRef = useRef<() => void>(() => {});
+  const handlePlayNextRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     isExternalActiveRef.current = isExternalActive;
@@ -171,10 +178,22 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         }
       });
       navigator.mediaSession.setActionHandler('previoustrack', () => {
-        syncChannel.post({ type: 'PREV_TRACK' });
+        handlePlayPrevRef.current();
       });
       navigator.mediaSession.setActionHandler('nexttrack', () => {
-        syncChannel.post({ type: 'NEXT_TRACK' });
+        handlePlayNextRef.current();
+      });
+      navigator.mediaSession.setActionHandler('seekbackward', (details) => {
+        if (videoRef.current) {
+          const skip = details.seekOffset || 10;
+          videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - skip);
+        }
+      });
+      navigator.mediaSession.setActionHandler('seekforward', (details) => {
+        if (videoRef.current) {
+          const skip = details.seekOffset || 10;
+          videoRef.current.currentTime = Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + skip);
+        }
       });
     } catch (e) {
       console.warn('MediaSession setup warning:', e);
@@ -783,23 +802,206 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     }
   };
 
-  // Picture-in-Picture toggle
+  // Picture-in-Picture toggle with cross-browser WebKit support
   const togglePiP = useCallback(async () => {
-    if (!videoRef.current) return;
+    const video = videoRef.current;
+    if (!video) return;
     try {
       if (document.pictureInPictureElement) {
         await document.exitPictureInPicture();
         setIsPiP(false);
         syncChannel.post({ type: 'PIP_CHANGE', payload: { active: false } });
-      } else if (document.pictureInPictureEnabled) {
-        await videoRef.current.requestPictureInPicture();
+      } else if (document.pictureInPictureEnabled && typeof video.requestPictureInPicture === 'function') {
+        await video.requestPictureInPicture();
         setIsPiP(true);
         syncChannel.post({ type: 'PIP_CHANGE', payload: { active: true } });
+      } else if ((video as any).webkitSupportsPresentationMode && typeof (video as any).webkitSetPresentationMode === 'function') {
+        const currentMode = (video as any).webkitPresentationMode;
+        const newMode = currentMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture';
+        (video as any).webkitSetPresentationMode(newMode);
+        setIsPiP(newMode === 'picture-in-picture');
+        syncChannel.post({ type: 'PIP_CHANGE', payload: { active: newMode === 'picture-in-picture' } });
       }
     } catch (err) {
       console.warn('PiP toggle error:', err);
     }
   }, []);
+
+  // Previous and Next Track Handlers for pop-out tab
+  const handlePlayPrev = useCallback(async () => {
+    // 1. Post to syncChannel so ControllerView handles it if connected
+    syncChannel.post({ type: 'PREV_TRACK' });
+
+    // 2. If more than 3 seconds in, seek to beginning (standard player convention)
+    if (videoRef.current && videoRef.current.currentTime > 3) {
+      videoRef.current.currentTime = 0;
+      return;
+    }
+
+    // 3. Fallback / autonomous handling if ControllerView is not active:
+    const queue = getStoredQueue();
+    const currentId = currentTrackRef.current?.id;
+    if (queue.length > 0) {
+      const curIdx = currentId ? queue.indexOf(currentId) : -1;
+      let prevIdx = curIdx > 0 ? curIdx - 1 : queue.length - 1;
+      const prevId = queue[prevIdx];
+      if (prevId && prevId !== currentId) {
+        loadTrackById(prevId, true);
+        return;
+      }
+    }
+
+    // 4. If queue is empty, check all media files in database:
+    try {
+      const allFiles = await getAllMediaFiles();
+      if (allFiles.length > 1) {
+        const curIdx = currentId ? allFiles.findIndex((f) => f.id === currentId) : -1;
+        let prevIdx = curIdx > 0 ? curIdx - 1 : allFiles.length - 1;
+        const target = allFiles[prevIdx];
+        if (target && target.id !== currentId) {
+          loadTrackById(target.id, true);
+        }
+      }
+    } catch {}
+  }, [loadTrackById]);
+
+  const handlePlayNext = useCallback(async () => {
+    // 1. Post to syncChannel so ControllerView handles it if connected
+    syncChannel.post({ type: 'NEXT_TRACK' });
+
+    // 2. Fallback / autonomous handling if ControllerView is not active:
+    const queue = getStoredQueue();
+    const currentId = currentTrackRef.current?.id;
+    if (queue.length > 0) {
+      const curIdx = currentId ? queue.indexOf(currentId) : -1;
+      let nextIdx = curIdx + 1 < queue.length ? curIdx + 1 : 0;
+      const nextId = queue[nextIdx];
+      if (nextId && nextId !== currentId) {
+        loadTrackById(nextId, true);
+        return;
+      }
+    }
+
+    // 3. If queue is empty, check all media files in database:
+    try {
+      const allFiles = await getAllMediaFiles();
+      if (allFiles.length > 1) {
+        const curIdx = currentId ? allFiles.findIndex((f) => f.id === currentId) : -1;
+        let nextIdx = curIdx + 1 < allFiles.length ? curIdx + 1 : 0;
+        const target = allFiles[nextIdx];
+        if (target && target.id !== currentId) {
+          loadTrackById(target.id, true);
+        }
+      }
+    } catch {}
+  }, [loadTrackById]);
+
+  useEffect(() => {
+    handlePlayPrevRef.current = handlePlayPrev;
+    handlePlayNextRef.current = handlePlayNext;
+  }, [handlePlayPrev, handlePlayNext]);
+
+  // Fullscreen Toggle
+  const toggleFullscreen = useCallback(() => {
+    if (!containerRef.current) return;
+    if (!document.fullscreenElement) {
+      containerRef.current.requestFullscreen().catch(() => {});
+      setIsFullscreen(true);
+    } else {
+      document.exitFullscreen().catch(() => {});
+      setIsFullscreen(false);
+    }
+  }, []);
+
+  // Global Keyboard Shortcuts (Space, J, L, P, N, I, F, M)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || (e.target as HTMLElement)?.isContentEditable) {
+        return;
+      }
+
+      switch (e.key) {
+        case ' ':
+        case 'k':
+        case 'K':
+          e.preventDefault();
+          if (videoRef.current) {
+            if (videoRef.current.paused) videoRef.current.play().catch(() => {});
+            else videoRef.current.pause();
+          }
+          break;
+
+        case 'ArrowLeft':
+        case 'j':
+        case 'J':
+          e.preventDefault();
+          if (videoRef.current) {
+            const newTime = Math.max(0, videoRef.current.currentTime - 5);
+            videoRef.current.currentTime = newTime;
+            syncChannel.post({ type: 'SEEK_TO', payload: { time: newTime } });
+          }
+          break;
+
+        case 'ArrowRight':
+        case 'l':
+        case 'L':
+          e.preventDefault();
+          if (videoRef.current) {
+            const newTime = Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + 5);
+            videoRef.current.currentTime = newTime;
+            syncChannel.post({ type: 'SEEK_TO', payload: { time: newTime } });
+          }
+          break;
+
+        case 'p':
+        case 'P':
+        case '<':
+          e.preventDefault();
+          handlePlayPrev();
+          break;
+
+        case 'n':
+        case 'N':
+        case '>':
+          e.preventDefault();
+          handlePlayNext();
+          break;
+
+        case 'i':
+        case 'I':
+          e.preventDefault();
+          togglePiP();
+          break;
+
+        case 'f':
+        case 'F':
+          e.preventDefault();
+          toggleFullscreen();
+          break;
+
+        case 'm':
+        case 'M':
+          e.preventDefault();
+          if (videoRef.current) {
+            const newMuted = !isMuted;
+            videoRef.current.muted = newMuted;
+            setIsMuted(newMuted);
+            setVolumeState(volume, newMuted);
+            syncChannel.post({ type: 'SET_VOLUME', payload: { volume, muted: newMuted } });
+          }
+          break;
+
+        default:
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [handlePlayPrev, handlePlayNext, togglePiP, toggleFullscreen, isMuted, volume]);
 
   // Initialize playback state from localStorage on mount (run exactly once)
   useEffect(() => {
@@ -1221,17 +1423,6 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     }, 2500);
   };
 
-  const toggleFullscreen = () => {
-    if (!containerRef.current) return;
-    if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen().catch(() => {});
-      setIsFullscreen(true);
-    } else {
-      document.exitFullscreen().catch(() => {});
-      setIsFullscreen(false);
-    }
-  };
-
   const formatTime = (secs: number) => {
     if (!Number.isFinite(secs) || secs < 0) return '00:00';
     const m = Math.floor(secs / 60);
@@ -1478,14 +1669,15 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
               <button
                 id="player-pip-btn"
                 onClick={togglePiP}
-                className={`p-2 rounded-xl bg-black/80 hover:bg-neutral-900 border transition cursor-pointer ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border transition cursor-pointer text-xs font-semibold ${
                   isPiP
-                    ? 'border-white text-white'
-                    : 'border-neutral-800 text-neutral-300 hover:text-white'
+                    ? 'bg-amber-500 text-black border-amber-400 shadow-md'
+                    : 'bg-black/80 hover:bg-neutral-900 border-neutral-800 text-neutral-300 hover:text-white'
                 }`}
-                title={isPiP ? 'Exit Picture-in-Picture' : 'Enter Picture-in-Picture'}
+                title={isPiP ? 'Exit Picture-in-Picture (I)' : 'Enter Picture-in-Picture (I)'}
               >
-                <PictureInPicture2 className="w-4 h-4" />
+                <PictureInPicture2 className="w-4 h-4 text-amber-400" />
+                <span>{isPiP ? 'Exit PiP' : 'PiP'}</span>
               </button>
             )}
 
@@ -1549,7 +1741,49 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                 <h4 className="text-xs font-bold text-white truncate max-w-[220px]">{currentTrack.name}</h4>
               </div>
 
-              <div className="flex items-center gap-2 sm:gap-3">
+              <div className="flex items-center gap-1.5 sm:gap-2">
+                {/* Previous Track Button */}
+                <button
+                  id="player-prev-track-btn"
+                  onClick={handlePlayPrev}
+                  className="p-1.5 sm:p-2 rounded-xl bg-neutral-800/90 hover:bg-neutral-700 text-neutral-300 hover:text-white transition cursor-pointer active:scale-95"
+                  title="Previous Video (P)"
+                >
+                  <SkipBack className="w-3.5 h-3.5 sm:w-4 sm:h-4 fill-current" />
+                </button>
+
+                {/* Play/Pause Button */}
+                <button
+                  id="player-play-pause-btn"
+                  onClick={() => {
+                    if (videoRef.current) {
+                      if (isPlaying) {
+                        videoRef.current.pause();
+                      } else {
+                        videoRef.current.play().catch((err) => {
+                          console.error('Manual play failed:', err);
+                        });
+                      }
+                    }
+                  }}
+                  className="p-1.5 sm:p-2 rounded-xl bg-white text-black hover:bg-neutral-200 transition cursor-pointer active:scale-95 shadow-md"
+                  title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
+                >
+                  {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" fill="currentColor" />}
+                </button>
+
+                {/* Next Track Button */}
+                <button
+                  id="player-next-track-btn"
+                  onClick={handlePlayNext}
+                  className="p-1.5 sm:p-2 rounded-xl bg-neutral-800/90 hover:bg-neutral-700 text-neutral-300 hover:text-white transition cursor-pointer active:scale-95"
+                  title="Next Video (N)"
+                >
+                  <SkipForward className="w-3.5 h-3.5 sm:w-4 sm:h-4 fill-current" />
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2 sm:gap-2.5">
                 {/* Loop Button */}
                 <button
                   onClick={() => {
@@ -1571,18 +1805,20 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                   <Repeat className="w-3.5 h-3.5" />
                 </button>
 
-                {/* PiP Button */}
+                {/* Picture-in-Picture Button */}
                 {pipSupported && (
                   <button
+                    id="player-bottom-pip-btn"
                     onClick={togglePiP}
-                    className={`p-1.5 rounded-lg border transition ${
+                    className={`p-1.5 rounded-lg border transition cursor-pointer flex items-center gap-1 ${
                       isPiP
-                        ? 'border-white text-white'
-                        : 'border-neutral-800 text-neutral-400 hover:text-white'
+                        ? 'bg-amber-500 text-black border-amber-400 shadow-sm'
+                        : 'border-neutral-800 text-neutral-300 hover:text-white hover:border-neutral-700 bg-neutral-900/80'
                     }`}
-                    title="Picture-in-Picture"
+                    title={isPiP ? 'Exit Picture-in-Picture (I)' : 'Picture-in-Picture (I)'}
                   >
                     <PictureInPicture2 className="w-3.5 h-3.5" />
+                    <span className="text-[11px] font-medium hidden md:inline">PiP</span>
                   </button>
                 )}
 
@@ -1602,6 +1838,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                         }
                       }}
                       className="text-neutral-400 hover:text-white"
+                      title={isMuted ? 'Unmute (M)' : 'Mute (M)'}
                     >
                       {isMuted || volume === 0 ? (
                         <VolumeX className="w-4 h-4 text-rose-400" />
@@ -1633,24 +1870,6 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                     />
                   </div>
                 )}
-
-                {/* Play/Pause Button */}
-                <button
-                  onClick={() => {
-                    if (videoRef.current) {
-                      if (isPlaying) {
-                        videoRef.current.pause();
-                      } else {
-                        videoRef.current.play().catch((err) => {
-                          console.error('Manual play failed:', err);
-                        });
-                      }
-                    }
-                  }}
-                  className="p-1.5 sm:p-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white transition cursor-pointer"
-                >
-                  {isPlaying ? <Pause className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <Play className="w-3.5 h-3.5 sm:w-4 sm:h-4 ml-0.5" />}
-                </button>
               </div>
             </div>
 
