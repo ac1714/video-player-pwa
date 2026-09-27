@@ -122,15 +122,37 @@ export default function App() {
     };
   }, [activeTrackId]);
 
-  const handleOpenPopout = (trackIdToOpen?: string) => {
+  const handleOpenPopout = (trackIdToOpen?: string, timeToOpen?: number) => {
+    const videoEl = typeof document !== 'undefined'
+      ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null)
+      : null;
+    const liveTime =
+      timeToOpen !== undefined && timeToOpen > 0
+        ? timeToOpen
+        : videoEl && Number.isFinite(videoEl.currentTime) && videoEl.currentTime > 0
+        ? videoEl.currentTime
+        : latestTimeRef.current > 0
+        ? latestTimeRef.current
+        : (window as any).__PWA_ACTIVE_TRACK_TIME__ || getActivePlaybackState().lastTime || 0;
+
     const targetId = trackIdToOpen || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__;
-    const currentState = getActivePlaybackState();
-    const curTime = (window as any).__PWA_ACTIVE_TRACK_TIME__ || currentState.lastTime || 0;
-    if (targetId) {
-      saveActivePlaybackState({ trackId: targetId, isPlaying: true, lastTime: curTime });
-      syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: targetId, autoPlay: true, currentTime: curTime } });
+
+    // Pause embedded preview video to prevent duplicate playback sound
+    if (videoEl && !videoEl.paused) {
+      try {
+        videoEl.pause();
+      } catch {}
     }
-    const res = syncChannel.openPopoutWindow(targetId, curTime);
+
+    if (targetId) {
+      saveActivePlaybackState({ trackId: targetId, isPlaying: true, lastTime: liveTime, currentTime: liveTime });
+      (window as any).__PWA_ACTIVE_TRACK_ID__ = targetId;
+      (window as any).__PWA_ACTIVE_TRACK_TIME__ = liveTime;
+      const mem = getMemoryFile(targetId);
+      const activeBlob = mem?.file || (window as any).__PWA_ACTIVE_MEDIA_BLOB__;
+      syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: targetId, autoPlay: true, currentTime: liveTime, blob: activeBlob } });
+    }
+    const res = syncChannel.openPopoutWindow(targetId, liveTime);
     if (res.win) {
       syncChannel.registerPopoutWindow(res.win);
     }
@@ -179,7 +201,11 @@ export default function App() {
                   <div className="flex items-center gap-2">
                     <button
                       id="split-pop-out-btn"
-                      onClick={() => handleOpenPopout()}
+                      onClick={() => {
+                        const videoEl = document.getElementById('pwa-main-video-element') as HTMLVideoElement | null;
+                        const cur = videoEl && Number.isFinite(videoEl.currentTime) ? videoEl.currentTime : undefined;
+                        handleOpenPopout(undefined, cur);
+                      }}
                       className="px-2.5 py-1 rounded-md bg-amber-500 hover:bg-amber-400 text-black font-semibold transition cursor-pointer flex items-center gap-1.5 shadow-sm active:scale-95 text-xs"
                       title="Open dedicated video player in a new browser tab"
                     >

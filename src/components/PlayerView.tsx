@@ -1262,6 +1262,30 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       } catch {}
     }
 
+    const timeParam = urlParams?.get('time');
+    const parsedTimeParam = timeParam ? parseFloat(timeParam) : NaN;
+
+    let initialStart = 0;
+    if (Number.isFinite(parsedTimeParam) && parsedTimeParam > 0) {
+      initialStart = parsedTimeParam;
+    } else if (typeof window !== 'undefined' && window.opener && !window.opener.closed) {
+      try {
+        const openerTime = (window.opener as any).__PWA_ACTIVE_TRACK_TIME__;
+        if (Number.isFinite(openerTime) && openerTime > 0) {
+          initialStart = openerTime;
+        }
+      } catch {}
+    }
+
+    if (initialStart <= 0) {
+      const state = getActivePlaybackState();
+      if (state.lastTime && state.lastTime > 0) {
+        initialStart = state.lastTime;
+      } else if (state.currentTime && state.currentTime > 0) {
+        initialStart = state.currentTime;
+      }
+    }
+
     setVolume(initial.volume);
     setIsMuted(initial.muted);
 
@@ -1273,8 +1297,6 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     const initLoad = async () => {
       // Never auto-play on startup and never randomly pick a file to load
       if (targetTrackId && !embedded) {
-        const state = getActivePlaybackState();
-        const initialStart = (state.trackId === targetTrackId) ? (state.lastTime || state.currentTime || 0) : 0;
         loadTrackById(targetTrackId, true, undefined, initialStart);
         syncChannel.post({
           type: 'REQUEST_TRACK_DATA',
@@ -1419,7 +1441,10 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
 
         case 'LOAD_TRACK':
           if (embedded && isExternalActiveRef.current) return;
-          loadTrackById(msg.payload.trackId, msg.payload.autoPlay ?? true, msg.payload.blob, msg.payload.currentTime ?? 0);
+          const seekTime = (msg.payload.currentTime !== undefined && msg.payload.currentTime > 0)
+            ? msg.payload.currentTime
+            : undefined;
+          loadTrackById(msg.payload.trackId, msg.payload.autoPlay ?? true, msg.payload.blob, seekTime);
           break;
 
         case 'PROVIDE_TRACK_DATA': {
@@ -1756,6 +1781,9 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         lastTime: cur,
         currentTime: cur,
       });
+      if (typeof window !== 'undefined') {
+        (window as any).__PWA_ACTIVE_TRACK_TIME__ = cur;
+      }
 
       if ('mediaSession' in navigator && 'setPositionState' in (navigator.mediaSession as any) && dur > 0) {
         try {

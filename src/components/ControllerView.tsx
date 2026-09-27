@@ -115,7 +115,7 @@ import { ThemeToggle } from './ThemeToggle';
 import { APP_VERSION } from '../version';
 
 interface ControllerViewProps {
-  onOpenPlayerInNewTab?: (trackId?: string) => void;
+  onOpenPlayerInNewTab?: (trackId?: string, currentTime?: number) => void;
   onToggleSplitMode?: () => void;
   isSplitMode?: boolean;
   viewMode?: 'split' | 'controller' | 'player';
@@ -923,11 +923,16 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
   const handleOpenPopoutWindow = (trackIdToOpen?: string) => {
     const targetId = trackIdToOpen || activeTrackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
-    if (targetId) {
-      saveActivePlaybackState({ trackId: targetId, isPlaying: true });
-      syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: targetId, autoPlay: true } });
+    const targetTime = currentTimeRef.current || currentTime || 0;
+    if (onOpenPlayerInNewTab) {
+      onOpenPlayerInNewTab(targetId, targetTime);
+      return;
     }
-    const res = syncChannel.openPopoutWindow(targetId);
+    if (targetId) {
+      saveActivePlaybackState({ trackId: targetId, isPlaying: true, lastTime: targetTime, currentTime: targetTime });
+      syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: targetId, autoPlay: true, currentTime: targetTime } });
+    }
+    const res = syncChannel.openPopoutWindow(targetId, targetTime);
     if (res.win) {
       setStatusNotice('Opened video player in new tab');
       setPopoutBlockedUrl(null);
@@ -1608,8 +1613,9 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
             onClick={(e) => {
               e.preventDefault();
               const targetId = activeTrackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
+              const targetTime = currentTimeRef.current || currentTime || 0;
               if (onOpenPlayerInNewTab) {
-                onOpenPlayerInNewTab(targetId);
+                onOpenPlayerInNewTab(targetId, targetTime);
               } else {
                 if (targetId) {
                   const mem = getMemoryFile(targetId);
@@ -2065,8 +2071,9 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                           rel="opener"
                           onClick={(e) => {
                             e.preventDefault();
+                            const targetTime = file.id === activeTrackId ? (currentTimeRef.current || currentTime || 0) : 0;
                             if (onOpenPlayerInNewTab) {
-                              onOpenPlayerInNewTab(file.id);
+                              onOpenPlayerInNewTab(file.id, targetTime);
                             } else {
                               const mem = getMemoryFile(file.id);
                               const blob = mem?.file || file.blobFallback;
@@ -2674,8 +2681,9 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                 onClick={(e) => {
                   e.preventDefault();
                   const targetId = activeTrackId || (mediaFiles.length > 0 ? mediaFiles[0].id : undefined);
+                  const targetTime = currentTimeRef.current || currentTime || 0;
                   if (onOpenPlayerInNewTab) {
-                    onOpenPlayerInNewTab(targetId);
+                    onOpenPlayerInNewTab(targetId, targetTime);
                   } else {
                     if (targetId) {
                       const mem = getMemoryFile(targetId);
