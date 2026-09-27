@@ -1109,35 +1109,21 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     }
 
     const initLoad = async () => {
-      let resolvedId = targetTrackId;
-      if (!resolvedId) {
-        try {
-          const state = getActivePlaybackState();
-          if (state.trackId) {
-            resolvedId = state.trackId;
-          } else {
-            const allFiles = await getAllMediaFiles();
-            if (allFiles.length > 0) {
-              resolvedId = allFiles[0].id;
-            }
-          }
-        } catch {}
-      }
-
-      if (resolvedId) {
+      // Never auto-play on startup and never randomly pick a file to load
+      if (targetTrackId && !embedded) {
         const state = getActivePlaybackState();
-        const initialStart = (state.trackId === resolvedId) ? (state.lastTime || state.currentTime || 0) : 0;
-        loadTrackById(resolvedId, true, undefined, initialStart);
+        const initialStart = (state.trackId === targetTrackId) ? (state.lastTime || state.currentTime || 0) : 0;
+        loadTrackById(targetTrackId, true, undefined, initialStart);
         syncChannel.post({
           type: 'REQUEST_TRACK_DATA',
-          payload: { trackId: resolvedId },
+          payload: { trackId: targetTrackId },
         });
         if (typeof window !== 'undefined' && window.opener && !window.opener.closed) {
           try {
             window.opener.postMessage(
               {
                 type: 'REQUEST_TRACK_DATA',
-                payload: { trackId: resolvedId },
+                payload: { trackId: targetTrackId },
               },
               '*'
             );

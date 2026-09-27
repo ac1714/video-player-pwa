@@ -400,10 +400,11 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
       const localState = getActivePlaybackState();
       setActivePlaylistIdState(localState.playlistId);
-      const targetId = localState.trackId || (files.length > 0 ? files[0].id : null);
+      // Only retain targetId if it exists in the currently loaded files; never auto-select files[0]
+      const targetId = localState.trackId && files.some((f) => f.id === localState.trackId) ? localState.trackId : null;
       setActiveTrackIdState(targetId);
-      if (targetId && files.length > 0) {
-        const target = files.find((f) => f.id === targetId) || files[0];
+      if (targetId) {
+        const target = files.find((f) => f.id === targetId);
         if (target?.blobFallback) {
           registerMemoryFile(target.id, target.blobFallback);
         }
@@ -1126,9 +1127,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
           await loadDatabase();
           setNeedsDirectoryReauth(false);
           setStatusNotice(`Imported ${result.count} video file${result.count === 1 ? '' : 's'}.`);
-          if (!activeTrackId && result.files.length > 0) {
-            dispatchLoadTrack(result.files[0].id, false);
-          }
           return;
         } else {
           setStatusNotice('No video files found in selected folder.');
@@ -1161,9 +1159,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         setStatusNotice('No video files found in folder.');
       } else {
         setStatusNotice(`Imported ${result.count} video file${result.count === 1 ? '' : 's'}.`);
-        if (!activeTrackId && result.files.length > 0) {
-          dispatchLoadTrack(result.files[0].id, false);
-        }
       }
     } catch (err) {
       console.error('Folder input error:', err);
@@ -1180,9 +1175,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         if (result.count > 0) {
           await loadDatabase();
           setStatusNotice(`Imported ${result.count} video file${result.count === 1 ? '' : 's'}.`);
-          if (!activeTrackId && result.files.length > 0) {
-            dispatchLoadTrack(result.files[0].id, false);
-          }
           return;
         }
       } catch (err: any) {
@@ -1208,9 +1200,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         setStatusNotice('No video files found.');
       } else {
         setStatusNotice(`Imported ${result.count} video file${result.count === 1 ? '' : 's'}.`);
-        if (!activeTrackId && result.files.length > 0) {
-          dispatchLoadTrack(result.files[0].id, false);
-        }
       }
     } catch (err) {
       console.error('File input error:', err);
@@ -1253,9 +1242,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         setStatusNotice('No video files found in dropped items.');
       } else {
         setStatusNotice(`Imported ${result.count} video file${result.count === 1 ? '' : 's'}.`);
-        if (!activeTrackId && result.files.length > 0) {
-          dispatchLoadTrack(result.files[0].id, false);
-        }
       }
     } catch (err) {
       console.error('Drop error:', err);
