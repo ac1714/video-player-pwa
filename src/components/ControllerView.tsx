@@ -85,7 +85,6 @@ import {
   pickFilesToRelink,
   relinkFilesFromList,
   isInsideIframe,
-  extractVideoDuration,
 } from '../lib/fileIngestion';
 import {
   getActivePlaybackState,
@@ -359,27 +358,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         }
         return f;
       });
-
-      // Background extract duration for memory files that are still missing duration
-      for (const f of files) {
-        if (!f.duration) {
-          const mem = getMemoryFile(f.id);
-          const blob = mem?.file || f.blobFallback;
-          if (blob) {
-            extractVideoDuration(blob).then((dur) => {
-              if (dur > 0) {
-                try {
-                  localStorage.setItem(`pwa_video_duration_${f.id}`, String(dur));
-                } catch {}
-                setMediaFiles((prev) =>
-                  prev.map((item) => (item.id === f.id ? { ...item, duration: dur } : item))
-                );
-                saveMediaFile({ ...f, duration: dur }).catch(() => {});
-              }
-            });
-          }
-        }
-      }
 
       setMediaFiles(files);
       setPlaylists(lists);
