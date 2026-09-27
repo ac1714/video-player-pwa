@@ -13,6 +13,7 @@ import { PlayerView } from './components/PlayerView';
 import { ThemeProvider } from './lib/theme';
 import { syncChannel, getPopoutUrl } from './lib/syncChannel';
 import { getActivePlaybackState, saveActivePlaybackState } from './lib/localStorageState';
+import { APP_VERSION } from './version';
 
 function getInitialViewMode(): 'controller' | 'player' | 'split' {
   if (typeof window === 'undefined') return 'split';
@@ -162,7 +163,12 @@ export default function App() {
             {viewMode === 'split' && (
               <div className="lg:col-span-5 xl:col-span-5 h-[340px] sm:h-[420px] lg:h-[calc(100vh-5.5rem)] sticky top-0 bg-black p-3 sm:p-4 flex flex-col z-20 order-1 lg:order-2 border-b lg:border-b-0 border-neutral-800">
                 <div className="flex items-center justify-between pb-2 text-xs text-neutral-400">
-                  <span className="font-semibold text-neutral-200">Video Player</span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-neutral-200">Video Player</span>
+                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                      {APP_VERSION}
+                    </span>
+                  </div>
                   <div className="flex items-center gap-2">
                     <button
                       id="split-pop-out-btn"

@@ -109,6 +109,7 @@ import {
 import { PWAInstallButton } from './PWAInstallButton';
 import { OfflineIndicator } from './OfflineIndicator';
 import { ThemeToggle } from './ThemeToggle';
+import { APP_VERSION } from '../version';
 
 interface ControllerViewProps {
   onOpenPlayerInNewTab?: (trackId?: string) => void;
@@ -1477,9 +1478,16 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
       {/* Top Header Navigation */}
       <header className="sticky top-0 z-30 bg-white/90 dark:bg-neutral-950/90 backdrop-blur-md border-b border-neutral-200 dark:border-neutral-800 px-4 md:px-8 py-3 flex items-center justify-between shadow-sm">
-        {/* Left: Title without icon */}
-        <div className="flex items-center">
+        {/* Left: Title with Version Number Badge */}
+        <div className="flex items-center gap-2">
           <span className="text-base font-semibold tracking-tight text-neutral-900 dark:text-neutral-100">Video Player</span>
+          <span
+            id="app-version-badge"
+            className="text-[11px] font-mono font-bold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 tracking-wide select-none"
+            title={`Application Version ${APP_VERSION}`}
+          >
+            {APP_VERSION}
+          </span>
         </div>
 
         {/* Right: Actions */}
