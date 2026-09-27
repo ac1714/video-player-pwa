@@ -124,6 +124,10 @@ export type SyncMessage =
     }
   | {
       type: 'BRING_PLAYBACK_HERE';
+      payload?: {
+        trackId?: string;
+        currentTime?: number;
+      };
     }
   | {
       type: 'SET_FIT_MODE';

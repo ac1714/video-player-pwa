@@ -155,6 +155,8 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
   const currentObjectUrlRef = useRef<string | null>(null);
   const lastTimeSentRef = useRef<number>(0);
   const pipWindowRef = useRef<any>(null);
+  const latestExternalTrackIdRef = useRef<string | null>(null);
+  const latestExternalTimeRef = useRef<number>(0);
 
   // Check Picture in Picture support
   useEffect(() => {
@@ -271,6 +273,13 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       setCurrentTime(targetTime);
       setDuration(fileRecord.duration || 0);
       updateMediaSession(fileRecord);
+
+      saveActivePlaybackState({
+        trackId: fileRecord.id,
+        isPlaying: autoPlay,
+        lastTime: targetTime,
+        currentTime: targetTime,
+      });
 
       // Report active track to controller via SYNC_PONG with accurate initial duration
       syncChannel.post({
@@ -1370,15 +1379,34 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           }
           break;
 
+        case 'TIME_UPDATE':
+          if (msg.payload?.trackId) {
+            latestExternalTrackIdRef.current = msg.payload.trackId;
+            if (msg.payload.currentTime !== undefined) {
+              latestExternalTimeRef.current = msg.payload.currentTime;
+            }
+          }
+          break;
+
+        case 'SYNC_PONG':
+          if (msg.payload?.trackId) {
+            latestExternalTrackIdRef.current = msg.payload.trackId;
+            if (msg.payload.currentTime !== undefined) {
+              latestExternalTimeRef.current = msg.payload.currentTime;
+            }
+          }
+          break;
+
         case 'BRING_PLAYBACK_HERE':
           if (!embedded) {
             videoRef.current?.pause();
             setIsPlaying(false);
             syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'paused' } });
           } else {
+            isExternalActiveRef.current = false;
             const state = getActivePlaybackState();
-            const targetId = state.trackId || currentTrack?.id;
-            const resumeTime = state.lastTime || state.currentTime || 0;
+            const targetId = msg.payload?.trackId || latestExternalTrackIdRef.current || state.trackId || currentTrackRef.current?.id;
+            const resumeTime = msg.payload?.currentTime ?? latestExternalTimeRef.current ?? state.lastTime ?? state.currentTime ?? 0;
             if (targetId) {
               loadTrackById(targetId, true, undefined, resumeTime);
             }
@@ -1572,6 +1600,12 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         },
       });
       setLastPlaybackTime(cur);
+      saveActivePlaybackState({
+        trackId: currentTrackRef.current?.id,
+        isPlaying: !videoRef.current.paused,
+        lastTime: cur,
+        currentTime: cur,
+      });
 
       if ('mediaSession' in navigator && 'setPositionState' in (navigator.mediaSession as any) && dur > 0) {
         try {
@@ -1724,7 +1758,28 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
             </button>
             {onBringBack && (
               <button
-                onClick={onBringBack}
+                onClick={() => {
+                  const state = getActivePlaybackState();
+                  const targetId = latestExternalTrackIdRef.current || state.trackId || currentTrackRef.current?.id;
+                  const resumeTime = latestExternalTimeRef.current || state.lastTime || state.currentTime || 0;
+                  
+                  // Pause and close external popout if open
+                  const popout = syncChannel.getPopoutWindow();
+                  if (popout && !popout.closed) {
+                    try { popout.close(); } catch {}
+                  }
+                  syncChannel.setPopoutWindow(null);
+                  syncChannel.post({
+                    type: 'BRING_PLAYBACK_HERE',
+                    payload: { trackId: targetId, currentTime: resumeTime },
+                  });
+
+                  isExternalActiveRef.current = false;
+                  if (targetId) {
+                    loadTrackById(targetId, true, undefined, resumeTime);
+                  }
+                  onBringBack();
+                }}
                 className="px-3.5 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 font-semibold text-xs transition cursor-pointer flex items-center gap-1.5 active:scale-95"
                 title="Return playback to this split preview"
               >

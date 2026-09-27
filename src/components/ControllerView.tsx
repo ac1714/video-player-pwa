@@ -2012,15 +2012,7 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
                       {/* Right: Actions */}
                       <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-auto flex-wrap">
-                        {/* Move to Top of Queue */}
-                        <button
-                          onClick={() => handleMoveToTopOfQueue(file.id)}
-                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-800 text-xs font-semibold text-neutral-700 dark:text-neutral-300 transition cursor-pointer"
-                          title="Move to Top of Queue"
-                        >
-                          <ChevronsUp className="w-3.5 h-3.5" />
-                          <span>Top of Queue</span>
-                        </button>
+                        {/* Add to Queue Button */}
 
                         {/* Add to Queue Button */}
                         <button
@@ -2508,11 +2500,12 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                           <button
                             disabled={idx === 0}
                             onClick={() => handleMoveQueueItemToTop(idx)}
-                            className="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-200 dark:hover:bg-neutral-800 disabled:opacity-20 cursor-pointer"
+                            className="flex items-center gap-1 px-2 py-1 rounded-lg border border-neutral-200 dark:border-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-800 text-xs font-semibold text-neutral-700 dark:text-neutral-300 disabled:opacity-20 disabled:pointer-events-none transition cursor-pointer"
                             title="Move to Top of Queue"
                             aria-label="Move to Top of Queue"
                           >
                             <ChevronsUp className="w-3.5 h-3.5" />
+                            <span>Top of Queue</span>
                           </button>
 
                           {/* Move Up */}

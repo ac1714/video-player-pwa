@@ -52,9 +52,10 @@ const ICON_PLAY = `<svg viewBox="0 0 24 24" width="18" height="18" fill="current
 const ICON_PAUSE = `<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg>`;
 const ICON_PREV = `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><polygon points="19 20 9 12 19 4 19 20"></polygon><rect x="5" y="4" width="2.5" height="16" rx="0.5"></rect></svg>`;
 const ICON_NEXT = `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"></polygon><rect x="16.5" y="4" width="2.5" height="16" rx="0.5"></rect></svg>`;
+const ICON_REWIND_1M = `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><text x="12" y="15.5" font-size="7.5" font-weight="700" fill="currentColor" stroke="none" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif">1m</text></svg>`;
+const ICON_FORWARD_1M = `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.85.99 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><text x="12" y="15.5" font-size="7.5" font-weight="700" fill="currentColor" stroke="none" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif">1m</text></svg>`;
 const ICON_MUTE = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>`;
 const ICON_UNMUTE = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path></svg>`;
-const ICON_CLOSE = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
 
 export async function openPipControls(handlers: PipControlsHandlers): Promise<boolean> {
   // If already open, close it (toggle behavior)
@@ -225,18 +226,6 @@ export async function openPipControls(handlers: PipControlsHandlers): Promise<bo
 
   topRow.appendChild(titleGroup);
 
-  const closeBtn = doc.createElement('button');
-  closeBtn.innerHTML = ICON_CLOSE;
-  closeBtn.title = 'Close Floating Controls';
-  closeBtn.className = 'pip-btn';
-  closeBtn.style.cssText = 'width:24px; height:24px; border-radius:6px; flex-shrink:0; border:none; background:transparent; color:#a1a1aa;';
-  closeBtn.onmouseenter = () => { closeBtn.style.color = '#ffffff'; closeBtn.style.background = '#262626'; };
-  closeBtn.onmouseleave = () => { closeBtn.style.color = '#a1a1aa'; closeBtn.style.background = 'transparent'; };
-  closeBtn.onclick = () => {
-    closePipControls();
-  };
-  topRow.appendChild(closeBtn);
-
   container.appendChild(topRow);
 
   // 2. Middle row: Timeline Scrubber
@@ -307,14 +296,14 @@ export async function openPipControls(handlers: PipControlsHandlers): Promise<bo
   };
   leftControls.appendChild(prevBtn);
 
-  // -10s
+  // Skip -1 minute
   const rewBtn = doc.createElement('button');
   rewBtn.className = 'pip-btn';
-  rewBtn.textContent = '-10s';
-  rewBtn.title = 'Rewind 10 Seconds';
-  rewBtn.style.cssText = 'padding:0 10px; height:34px; font-size:11px; font-weight:700; border-radius:8px; font-family:ui-monospace, monospace;';
+  rewBtn.innerHTML = ICON_REWIND_1M;
+  rewBtn.title = 'Rewind 1 Minute (-60s)';
+  rewBtn.style.cssText = 'width:34px; height:34px; border-radius:8px;';
   rewBtn.onclick = () => {
-    if (activeHandlers?.onSkip) activeHandlers.onSkip(-10);
+    if (activeHandlers?.onSkip) activeHandlers.onSkip(-60);
   };
   leftControls.appendChild(rewBtn);
 
@@ -331,14 +320,14 @@ export async function openPipControls(handlers: PipControlsHandlers): Promise<bo
   };
   leftControls.appendChild(playBtn);
 
-  // +10s
+  // Skip +1 minute
   const fwdBtn = doc.createElement('button');
   fwdBtn.className = 'pip-btn';
-  fwdBtn.textContent = '+10s';
-  fwdBtn.title = 'Forward 10 Seconds';
-  fwdBtn.style.cssText = 'padding:0 10px; height:34px; font-size:11px; font-weight:700; border-radius:8px; font-family:ui-monospace, monospace;';
+  fwdBtn.innerHTML = ICON_FORWARD_1M;
+  fwdBtn.title = 'Fast Forward 1 Minute (+60s)';
+  fwdBtn.style.cssText = 'width:34px; height:34px; border-radius:8px;';
   fwdBtn.onclick = () => {
-    if (activeHandlers?.onSkip) activeHandlers.onSkip(10);
+    if (activeHandlers?.onSkip) activeHandlers.onSkip(60);
   };
   leftControls.appendChild(fwdBtn);
 

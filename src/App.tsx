@@ -6,7 +6,7 @@
  * - /controller.html or / -> Split View (Controller + Embedded Player Preview) or Controller-only
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { ExternalLink, Sliders, X, Copy, Check } from 'lucide-react';
 import { ControllerView } from './components/ControllerView';
 import { PlayerView } from './components/PlayerView';
@@ -43,6 +43,9 @@ export default function App() {
   const [copiedUrl, setCopiedUrl] = useState<boolean>(false);
   const [isExternalActive, setIsExternalActive] = useState<boolean>(false);
 
+  const latestTrackIdRef = useRef<string>(getActivePlaybackState().trackId || '');
+  const latestTimeRef = useRef<number>(getActivePlaybackState().lastTime || 0);
+
   // Detect route based on URL path or search query parameter
   useEffect(() => {
     const handlePopState = () => {
@@ -58,8 +61,25 @@ export default function App() {
     const unsub = syncChannel.subscribe((msg) => {
       if (msg.type === 'LOAD_TRACK' && msg.payload.trackId) {
         setActiveTrackId(msg.payload.trackId);
+        latestTrackIdRef.current = msg.payload.trackId;
+        if (msg.payload.currentTime !== undefined) {
+          latestTimeRef.current = msg.payload.currentTime;
+        }
       } else if (msg.type === 'PROVIDE_TRACK_DATA' && msg.payload.trackId) {
         setActiveTrackId(msg.payload.trackId);
+        latestTrackIdRef.current = msg.payload.trackId;
+      } else if (msg.type === 'TIME_UPDATE' && msg.payload?.trackId) {
+        setActiveTrackId(msg.payload.trackId);
+        latestTrackIdRef.current = msg.payload.trackId;
+        if (msg.payload.currentTime !== undefined) {
+          latestTimeRef.current = msg.payload.currentTime;
+        }
+      } else if (msg.type === 'SYNC_PONG' && msg.payload?.trackId) {
+        setActiveTrackId(msg.payload.trackId);
+        latestTrackIdRef.current = msg.payload.trackId;
+        if (msg.payload.currentTime !== undefined) {
+          latestTimeRef.current = msg.payload.currentTime;
+        }
       } else if (msg.type === 'PLAYER_CONNECTED' && msg.payload?.isPopout) {
         setIsExternalActive(true);
       } else if (msg.type === 'PLAYER_DISCONNECTED' && msg.payload?.isPopout) {
@@ -67,8 +87,8 @@ export default function App() {
         // Automatically switch to split view so the video player is visible and mounted
         setViewMode('split');
         const state = getActivePlaybackState();
-        const targetTrackId = msg.payload?.trackId || state.trackId || activeTrackId;
-        const resumeTime = msg.payload?.currentTime ?? state.lastTime ?? state.currentTime ?? 0;
+        const targetTrackId = msg.payload?.trackId || latestTrackIdRef.current || state.trackId || activeTrackId;
+        const resumeTime = msg.payload?.currentTime ?? latestTimeRef.current ?? state.lastTime ?? state.currentTime ?? 0;
         if (targetTrackId) {
           saveActivePlaybackState({ trackId: targetTrackId, isPlaying: true, lastTime: resumeTime });
           setTimeout(() => {
@@ -86,8 +106,8 @@ export default function App() {
         setIsExternalActive(false);
         setViewMode('split');
         const state = getActivePlaybackState();
-        const targetTrackId = state.trackId || activeTrackId;
-        const resumeTime = state.lastTime || state.currentTime || 0;
+        const targetTrackId = msg.payload?.trackId || latestTrackIdRef.current || state.trackId || activeTrackId;
+        const resumeTime = msg.payload?.currentTime ?? latestTimeRef.current ?? state.lastTime ?? state.currentTime ?? 0;
         if (targetTrackId) {
           saveActivePlaybackState({ trackId: targetTrackId, isPlaying: true, lastTime: resumeTime });
           setTimeout(() => {
@@ -194,8 +214,15 @@ export default function App() {
                     isExternalActive={isExternalActive}
                     onOpenPopout={() => handleOpenPopout()}
                     onBringBack={() => {
-                      syncChannel.post({ type: 'BRING_PLAYBACK_HERE' });
                       setIsExternalActive(false);
+                      setViewMode('split');
+                      const state = getActivePlaybackState();
+                      const targetTrackId = latestTrackIdRef.current || state.trackId || activeTrackId;
+                      const resumeTime = latestTimeRef.current ?? state.lastTime ?? state.currentTime ?? 0;
+                      syncChannel.post({
+                        type: 'BRING_PLAYBACK_HERE',
+                        payload: { trackId: targetTrackId, currentTime: resumeTime },
+                      });
                     }}
                   />
                 </div>
