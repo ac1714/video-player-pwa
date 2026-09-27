@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PWA Video Sync</title>
+    <meta name="description" content="Multi-page PWA video player and controller with BroadcastChannel sync and persistent local media storage." />
+    <meta property="og:title" content="PWA Video Sync" />
+    <meta property="og:description" content="Multi-page PWA video player and controller with BroadcastChannel sync and persistent local media storage." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="VideoSync" />
+    <link rel="apple-touch-icon" href="/video-player-pwa/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/video-player-pwa/icon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:ital,wght@0,300..800;1,300..800&display=swap" rel="stylesheet" />
+    <script>
+      (function() {
+        try {
+          var t = localStorage.getItem('pwa_video_theme') || 'dark';
+          var root = document.documentElement;
+          if (t === 'dark') {
+            root.classList.add('dark');
+            root.setAttribute('data-theme', 'dark');
+            root.style.colorScheme = 'dark';
+          } else {
+            root.classList.remove('dark');
+            root.setAttribute('data-theme', 'light');
+            root.style.colorScheme = 'light';
+          }
+        } catch(e) {}
+      })();
+    </script>
+    <script type="module" crossorigin src="/video-player-pwa/assets/main-TxBkuXEY.js"></script>
+    <link rel="stylesheet" crossorigin href="/video-player-pwa/assets/main-CnU575gq.css">
+  <link rel="manifest" href="/video-player-pwa/manifest.webmanifest"><script id="vite-plugin-pwa:register-sw" src="/video-player-pwa/registerSW.js"></script></head>
+  <body class="antialiased selection:bg-neutral-800 selection:text-white dark:selection:bg-neutral-200 dark:selection:text-black">
+    <div id="root"></div>
+  </body>
+</html>

@@ -1,0 +1,1 @@
+if('serviceWorker' in navigator) {window.addEventListener('load', () => {navigator.serviceWorker.register('/video-player-pwa/sw.js', { scope: '/video-player-pwa/' })})}
