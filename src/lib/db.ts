@@ -113,148 +113,106 @@ export function getMemoryFile(id: string) {
 }
 
 /**
- * Persists a video file blob into OPFS, Cache Storage, and IndexedDB media_blobs store.
- * This guarantees the file remains playable across page reloads and across tabs without re-import.
+ * Keeps video reference in memory registry for instantaneous playback in active session.
+ * Does NOT write full binary video blobs to IndexedDB, OPFS, or Cache Storage,
+ * ensuring zero disk thrashing, zero quota exhaustion, and instant video playback.
  */
 export async function persistBinaryBlob(id: string, blob: Blob): Promise<void> {
   if (!id || !blob) return;
   registerMemoryFile(id, blob);
-
-  // 1. Persist to IndexedDB dedicated media_blobs store
-  try {
-    const db = await getDB();
-    await putToStore(db, STORE_MEDIA_BLOBS, { id, blob });
-  } catch (err) {
-    // IndexedDB fallback
-  }
-
-  // 2. Persist to OPFS (Origin Private File System)
-  try {
-    if (typeof navigator !== 'undefined' && navigator.storage && typeof navigator.storage.getDirectory === 'function') {
-      const root = await navigator.storage.getDirectory();
-      const fileHandle = await root.getFileHandle(`video_${id}`, { create: true });
-      const writable = await (fileHandle as any).createWritable();
-      await writable.write(blob);
-      await writable.close();
-    }
-  } catch (err) {
-    // OPFS fallback
-  }
-
-  // 3. Persist to Cache Storage API (shared across tabs and reloads on the same origin)
-  try {
-    if (typeof caches !== 'undefined') {
-      const cache = await caches.open(CACHE_NAME);
-      const response = new Response(blob, {
-        headers: {
-          'Content-Type': blob.type || 'video/mp4',
-          'Content-Length': String(blob.size),
-        },
-      });
-      await cache.put(`/pwa-video-stream/${id}`, response);
-    }
-  } catch (err) {
-    // Cache storage fallback
-  }
 }
 
 /**
- * Retrieves a persistent video blob from Memory, OPFS, Cache Storage, or IndexedDB media_blobs.
+ * Retrieves in-memory video file or blob for instantaneous playback.
  */
 export async function retrieveBinaryBlob(id: string): Promise<Blob | undefined> {
   if (!id) return undefined;
-
-  // 1. In-Memory Registry
   const mem = getMemoryFile(id);
   if (mem?.file && mem.file.size > 0) {
     return mem.file;
   }
-
-  // 2. IndexedDB media_blobs store
-  try {
-    const db = await getDB();
-    if (db.objectStoreNames.contains(STORE_MEDIA_BLOBS)) {
-      const res = await new Promise<any>((resolve) => {
-        try {
-          const tx = db.transaction(STORE_MEDIA_BLOBS, 'readonly');
-          const store = tx.objectStore(STORE_MEDIA_BLOBS);
-          const req = store.get(id);
-          req.onsuccess = () => resolve(req.result);
-          req.onerror = () => resolve(undefined);
-        } catch {
-          resolve(undefined);
-        }
-      });
-      if (res?.blob && res.blob.size > 0) {
-        registerMemoryFile(id, res.blob);
-        return res.blob;
-      }
-    }
-  } catch {}
-
-  // 2b. Check STORE_MEDIA_FILES.blobFallback
-  try {
-    const db = await getDB();
-    if (db.objectStoreNames.contains(STORE_MEDIA_FILES)) {
-      const fileRec = await new Promise<any>((resolve) => {
-        try {
-          const tx = db.transaction(STORE_MEDIA_FILES, 'readonly');
-          const store = tx.objectStore(STORE_MEDIA_FILES);
-          const req = store.get(id);
-          req.onsuccess = () => resolve(req.result);
-          req.onerror = () => resolve(undefined);
-        } catch {
-          resolve(undefined);
-        }
-      });
-      if (fileRec?.blobFallback && fileRec.blobFallback.size > 0) {
-        registerMemoryFile(id, fileRec.blobFallback, fileRec.handle);
-        return fileRec.blobFallback;
-      }
-    }
-  } catch {}
-
-  // 3. OPFS (Origin Private File System)
-  try {
-    if (typeof navigator !== 'undefined' && navigator.storage && typeof navigator.storage.getDirectory === 'function') {
-      const root = await navigator.storage.getDirectory();
-      const fileHandle = await root.getFileHandle(`video_${id}`);
-      const file = await fileHandle.getFile();
-      if (file && file.size > 0) {
-        registerMemoryFile(id, file);
-        return file;
-      }
-    }
-  } catch {}
-
-  // 4. Cache Storage API
-  try {
-    if (typeof caches !== 'undefined') {
-      const cache = await caches.open(CACHE_NAME);
-      const match = await cache.match(`/pwa-video-stream/${id}`);
-      if (match) {
-        const blob = await match.blob();
-        if (blob && blob.size > 0) {
-          registerMemoryFile(id, blob);
-          return blob;
-        }
-      }
-    }
-  } catch {}
-
   return undefined;
 }
 
 /**
- * Deletes binary blob from all storage layers.
+ * Purges legacy stored video blobs from IndexedDB, OPFS, and Cache Storage.
+ * This frees gigabytes of duplicate browser storage and prevents disk I/O thrashing.
+ */
+export async function purgeLegacyStoredBlobs(): Promise<void> {
+  // 1. Clear IndexedDB STORE_MEDIA_BLOBS
+  try {
+    const db = await getDB();
+    if (db.objectStoreNames.contains(STORE_MEDIA_BLOBS)) {
+      const tx = db.transaction(STORE_MEDIA_BLOBS, 'readwrite');
+      tx.objectStore(STORE_MEDIA_BLOBS).clear();
+    }
+  } catch {}
+
+  // 2. Clean up any blobFallback from STORE_MEDIA_FILES to keep records lean (metadata + handles only)
+  try {
+    const db = await getDB();
+    if (db.objectStoreNames.contains(STORE_MEDIA_FILES)) {
+      const tx = db.transaction(STORE_MEDIA_FILES, 'readwrite');
+      const store = tx.objectStore(STORE_MEDIA_FILES);
+      const req = store.openCursor();
+      req.onsuccess = (e) => {
+        const cursor = (e.target as IDBRequest).result as IDBCursorWithValue;
+        if (cursor) {
+          const val = cursor.value;
+          if (val && val.blobFallback) {
+            delete val.blobFallback;
+            cursor.update(val);
+          }
+          cursor.continue();
+        }
+      };
+    }
+  } catch {}
+
+  // 3. Clear OPFS video_* files
+  try {
+    if (typeof navigator !== 'undefined' && navigator.storage && typeof navigator.storage.getDirectory === 'function') {
+      const root = await navigator.storage.getDirectory();
+      // @ts-expect-error entries on directory handle
+      if (typeof root.entries === 'function') {
+        // @ts-expect-error entries async iterator
+        for await (const [name] of root.entries()) {
+          if (name.startsWith('video_')) {
+            await root.removeEntry(name).catch(() => {});
+          }
+        }
+      }
+    }
+  } catch {}
+
+  // 4. Delete legacy Cache Storage
+  try {
+    if (typeof caches !== 'undefined') {
+      await caches.delete(CACHE_NAME).catch(() => {});
+      await caches.delete('pwa-video-stream').catch(() => {});
+    }
+  } catch {}
+}
+
+// Automatically purge legacy duplicate blobs in the background on startup
+if (typeof window !== 'undefined') {
+  setTimeout(() => {
+    purgeLegacyStoredBlobs().catch(() => {});
+  }, 1000);
+}
+
+/**
+ * Deletes binary blob from memory and legacy storage layers.
  */
 export async function deleteBinaryBlob(id: string): Promise<void> {
   memoryFileRegistry.delete(id);
 
   try {
     const db = await getDB();
-    const tx = db.transaction(STORE_MEDIA_BLOBS, 'readwrite');
-    tx.objectStore(STORE_MEDIA_BLOBS).delete(id);
+    if (db.objectStoreNames.contains(STORE_MEDIA_BLOBS)) {
+      const tx = db.transaction(STORE_MEDIA_BLOBS, 'readwrite');
+      tx.objectStore(STORE_MEDIA_BLOBS).delete(id);
+    }
   } catch {}
 
   try {
@@ -391,13 +349,8 @@ async function saveMediaFileResilient(db: IDBDatabase, file: MediaFile): Promise
     return;
   }
 
-  // Persist blob to OPFS & Cache Storage asynchronously for bulletproof reload survival
-  if (file.blobFallback) {
-    persistBinaryBlob(file.id, file.blobFallback).catch(() => {});
-  }
-
-  // 1. Attempt to store full record with blob fallback and handle for full offline persistence
-  const fullRecord: MediaFile = {
+  // Store metadata & handle only (NEVER full binary video blobs)
+  const metadataRecord: MediaFile = {
     id: file.id,
     name: file.name,
     relativePath: file.relativePath || file.name,
@@ -407,29 +360,12 @@ async function saveMediaFileResilient(db: IDBDatabase, file: MediaFile): Promise
     duration: file.duration,
     createdAt: file.createdAt || Date.now(),
     handle: file.handle,
-    blobFallback: file.blobFallback,
   };
 
   try {
-    await putToStore(db, STORE_MEDIA_FILES, fullRecord);
-  } catch {
-    // If storing with blobFallback exceeds quota or fails, store metadata & handle only
-    const metadataRecord: MediaFile = {
-      id: file.id,
-      name: file.name,
-      relativePath: file.relativePath || file.name,
-      mimeType: file.mimeType,
-      size: file.size,
-      lastModified: file.lastModified,
-      duration: file.duration,
-      createdAt: file.createdAt || Date.now(),
-      handle: file.handle,
-    };
-    try {
-      await putToStore(db, STORE_MEDIA_FILES, metadataRecord);
-    } catch (err2) {
-      console.warn('Failed to store metadata record:', err2);
-    }
+    await putToStore(db, STORE_MEDIA_FILES, metadataRecord);
+  } catch (err2) {
+    console.warn('Failed to store metadata record:', err2);
   }
 }
 
@@ -447,11 +383,7 @@ export async function saveMediaFile(file: MediaFile): Promise<void> {
     duration: file.duration,
     createdAt: file.createdAt || Date.now(),
     handle: file.handle,
-    blobFallback: file.blobFallback,
   });
-  if (file.blobFallback) {
-    await persistBinaryBlob(file.id, file.blobFallback);
-  }
 }
 
 export async function saveMediaFilesBatch(files: MediaFile[]): Promise<{ savedCount: number; errors: number }> {
@@ -460,12 +392,9 @@ export async function saveMediaFilesBatch(files: MediaFile[]): Promise<{ savedCo
   // Register all in memory immediately for instantaneous in-session playback
   for (const f of files) {
     registerMemoryFile(f.id, f.blobFallback, f.handle);
-    if (f.blobFallback) {
-      persistBinaryBlob(f.id, f.blobFallback).catch(() => {});
-    }
   }
 
-  // Save metadata & handles to IndexedDB
+  // Save metadata & handles to IndexedDB (zero binary blob disk bloat)
   return new Promise((resolve) => {
     try {
       const tx = db.transaction([STORE_MEDIA_FILES], 'readwrite');
@@ -705,6 +634,7 @@ export async function clearVideoCache(keepPlaylists: boolean = true): Promise<vo
  */
 export async function fullSystemReset(): Promise<void> {
   memoryFileRegistry.clear();
+  await purgeLegacyStoredBlobs().catch(() => {});
   try {
     const db = await getDB();
     db.close();

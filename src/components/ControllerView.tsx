@@ -72,7 +72,6 @@ import {
   getAllDirectoryHandles,
   saveDirectoryHandle,
   retrieveBinaryBlob,
-  persistBinaryBlob,
   saveMediaFile,
 } from '../lib/db';
 import { syncChannel, getPopoutUrl } from '../lib/syncChannel';
@@ -663,7 +662,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
           if (!reqTrackId) break;
           const mem = getMemoryFile(reqTrackId);
           if (mem?.file) {
-            persistBinaryBlob(reqTrackId, mem.file).catch(() => {});
             syncChannel.post({
               type: 'PROVIDE_TRACK_DATA',
               payload: { trackId: reqTrackId, blob: mem.file },
@@ -697,7 +695,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                 } catch {}
               }
               if (blob) {
-                persistBinaryBlob(reqTrackId, blob).catch(() => {});
                 syncChannel.post({
                   type: 'PROVIDE_TRACK_DATA',
                   payload: {
@@ -881,7 +878,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
     if (availableBlob) {
       setNeedsDirectoryReauth(false);
-      persistBinaryBlob(trackId, availableBlob).catch(() => {});
       if (typeof window !== 'undefined') {
         (window as any).__PWA_ACTIVE_TRACK_ID__ = trackId;
         (window as any).__PWA_ACTIVE_MEDIA_BLOB__ = availableBlob;

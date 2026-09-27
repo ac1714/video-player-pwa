@@ -32,7 +32,7 @@ import {
   RotateCw,
 } from 'lucide-react';
 import { MediaFile, SyncMessage } from '../types';
-import { getMediaFile, getMemoryFile, saveMediaFile, registerMemoryFile, getAllDirectoryHandles, getAllMediaFiles, retrieveBinaryBlob, persistBinaryBlob } from '../lib/db';
+import { getMediaFile, getMemoryFile, registerMemoryFile, getAllDirectoryHandles, getAllMediaFiles, retrieveBinaryBlob } from '../lib/db';
 import { relinkFolderHandles, resolveFileFromDirectory, generateUUID, isInsideIframe, pickFolderToRelink, pickFilesToRelink, relinkFilesFromList } from '../lib/fileIngestion';
 import { syncChannel, getPopoutUrl } from '../lib/syncChannel';
 import {
@@ -388,7 +388,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         let fileRecord = await getMediaFile(trackId);
         let mediaBlob: Blob | null = directBlob || null;
 
-        // 1. Direct blob fallback or local memory registry
+        // 1. Direct blob fallback or local memory registry (instant <1ms)
         if (!mediaBlob) {
           const localMem = getMemoryFile(trackId);
           if (localMem?.file) {
@@ -396,7 +396,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           }
         }
 
-        // 2. Synchronous opener / parent window lookup (INSTANT cross-window memory sharing)
+        // 2. Synchronous opener / parent window lookup (INSTANT cross-window memory sharing, <1ms)
         if (!mediaBlob && typeof window !== 'undefined') {
           try {
             const hostWin =
@@ -412,7 +412,6 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                 const foundBlob: Blob = hostEntry.file;
                 mediaBlob = foundBlob;
                 registerMemoryFile(trackId, foundBlob, hostEntry.handle);
-                persistBinaryBlob(trackId, foundBlob).catch(() => {});
               } else {
                 const activeBlob = (hostWin as any).__PWA_ACTIVE_MEDIA_BLOB__;
                 const activeTrackId = (hostWin as any).__PWA_ACTIVE_TRACK_ID__;
@@ -420,7 +419,6 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                   const foundBlob: Blob = activeBlob;
                   mediaBlob = foundBlob;
                   registerMemoryFile(trackId, foundBlob);
-                  persistBinaryBlob(trackId, foundBlob).catch(() => {});
                 } else {
                   const hostRegistry = (hostWin as any).__PWA_MEMORY_REGISTRY__;
                   if (hostRegistry && hostRegistry.get) {
@@ -429,7 +427,6 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                       const foundBlob: Blob = regEntry.file;
                       mediaBlob = foundBlob;
                       registerMemoryFile(trackId, foundBlob, regEntry.handle);
-                      persistBinaryBlob(trackId, foundBlob).catch(() => {});
                     }
                   }
                 }
@@ -440,15 +437,41 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           }
         }
 
-        // 3. Direct blob fallback (if stored in record, OPFS, Cache Storage, or IndexedDB)
-        if (!mediaBlob) {
-          if (fileRecord?.blobFallback) {
-            mediaBlob = fileRecord.blobFallback;
-          } else {
-            mediaBlob = (await retrieveBinaryBlob(trackId)) || null;
+        // 3. FileSystemFileHandle: Check direct file handle from fileRecord (<5ms)
+        if (!mediaBlob && fileRecord?.handle) {
+          try {
+            // @ts-expect-error queryPermission mode check
+            const permStatus = await fileRecord.handle.queryPermission({ mode: 'read' });
+            if (permStatus === 'granted') {
+              mediaBlob = await fileRecord.handle.getFile();
+              registerMemoryFile(trackId, mediaBlob, fileRecord.handle);
+            }
+          } catch (permErr: unknown) {
+            console.warn('File handle query failed:', permErr);
           }
         }
 
+        // 4. Stored directory handles: Resolve target file directly from folder handle (<10ms)
+        if (!mediaBlob && fileRecord) {
+          const dirHandles = await getAllDirectoryHandles();
+          for (const dirHandle of dirHandles) {
+            try {
+              // @ts-expect-error queryPermission mode check
+              const dirPerm = await dirHandle.queryPermission({ mode: 'read' });
+              if (dirPerm === 'granted') {
+                const resolved = await resolveFileFromDirectory(dirHandle, fileRecord.relativePath || '', fileRecord.name);
+                if (resolved?.file) {
+                  mediaBlob = resolved.file;
+                  registerMemoryFile(trackId, mediaBlob, resolved.handle);
+                  relinkFolderHandles(dirHandle).catch(() => {});
+                  break;
+                }
+              }
+            } catch {}
+          }
+        }
+
+        // If mediaBlob found, play immediately!
         if (mediaBlob) {
           if (!fileRecord) {
             fileRecord = {
@@ -458,7 +481,6 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
               size: mediaBlob.size,
               lastModified: Date.now(),
               createdAt: Date.now(),
-              blobFallback: mediaBlob,
             };
           }
           registerMemoryFile(trackId, mediaBlob);
@@ -497,7 +519,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           return;
         }
 
-        // 4. Request data from controller tab via BroadcastChannel & opener postMessage
+        // 5. If not found in memory, opener, or disk handles, request from controller tab via BroadcastChannel
         setPendingTrack({ trackId, autoPlay, startTime });
         syncChannel.post({
           type: 'REQUEST_TRACK_DATA',
@@ -512,45 +534,8 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           } catch {}
         }
 
-        // 5. If no blob fallback, try FileSystemFileHandle
-        if (fileRecord?.handle) {
-          try {
-            // @ts-expect-error queryPermission mode check
-            const permStatus = await fileRecord.handle.queryPermission({ mode: 'read' });
-            if (permStatus === 'granted') {
-              mediaBlob = await fileRecord.handle.getFile();
-              registerMemoryFile(trackId, mediaBlob, fileRecord.handle);
-              playMediaBlob(fileRecord, mediaBlob, autoPlay);
-              return;
-            }
-          } catch (permErr: unknown) {
-            console.warn('File handle query failed:', permErr);
-          }
-        }
-
-        // 6. Check stored directory handles
-        const dirHandles = await getAllDirectoryHandles();
-        if (dirHandles.length > 0 && fileRecord) {
-          for (const dirHandle of dirHandles) {
-            try {
-              // @ts-expect-error queryPermission mode check
-              const dirPerm = await dirHandle.queryPermission({ mode: 'read' });
-              if (dirPerm === 'granted') {
-                const resolved = await resolveFileFromDirectory(dirHandle, fileRecord.relativePath || '', fileRecord.name);
-                if (resolved?.file) {
-                  mediaBlob = resolved.file;
-                  registerMemoryFile(trackId, mediaBlob, resolved.handle);
-                  playMediaBlob(fileRecord, mediaBlob, autoPlay);
-                  relinkFolderHandles(dirHandle).catch(() => {});
-                  return;
-                }
-              }
-            } catch {}
-          }
-        }
-
-        // Wait up to 3500ms for controller tab to respond with blob or persist to Cache/DB
-        for (let i = 0; i < 20; i++) {
+        // Wait up to 1000ms for controller tab to respond with blob
+        for (let i = 0; i < 10; i++) {
           if (
             currentTrackRef.current?.id === trackId &&
             videoRef.current?.src &&
@@ -561,7 +546,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
             return;
           }
 
-          await new Promise((resolve) => setTimeout(resolve, 175));
+          await new Promise((resolve) => setTimeout(resolve, 100));
 
           // Check opener during wait
           if (typeof window !== 'undefined') {
@@ -599,53 +584,17 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                 size: checkMem.file.size,
                 lastModified: Date.now(),
                 createdAt: Date.now(),
-                blobFallback: checkMem.file,
               },
               checkMem.file,
-              autoPlay
+              autoPlay,
+              startTime
             );
             return;
-          }
-
-          // Check persistent storage layers (IndexedDB media_blobs / Cache Storage / OPFS)
-          const storedBlob = await retrieveBinaryBlob(trackId);
-          if (storedBlob) {
-            setNeedsPermission(false);
-            playMediaBlob(
-              fileRecord || {
-                id: trackId,
-                name: 'Media Track',
-                mimeType: storedBlob.type || 'video/mp4',
-                size: storedBlob.size,
-                lastModified: Date.now(),
-                createdAt: Date.now(),
-                blobFallback: storedBlob,
-              },
-              storedBlob,
-              autoPlay
-            );
-            return;
-          }
-
-          // Resend request at midpoint if not yet resolved
-          if (i === 5 || i === 12) {
-            syncChannel.post({
-              type: 'REQUEST_TRACK_DATA',
-              payload: { trackId },
-            });
-            if (typeof window !== 'undefined' && window.opener && !window.opener.closed) {
-              try {
-                window.opener.postMessage({
-                  type: 'REQUEST_TRACK_DATA',
-                  payload: { trackId },
-                }, '*');
-              } catch {}
-            }
           }
         }
 
         // If still no blob after grace window, prompt user for gesture authorization
-        setPendingTrack({ trackId, autoPlay });
+        setPendingTrack({ trackId, autoPlay, startTime });
         setNeedsPermission(true);
         setIsPlaying(false);
       } catch (err: unknown) {
@@ -786,7 +735,6 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                 const resolved = await resolveFileFromDirectory(dirHandle, fileRec.relativePath || '', fileRec.name);
                 if (resolved?.file) {
                   registerMemoryFile(trackToLoad.trackId, resolved.file, resolved.handle);
-                  persistBinaryBlob(trackToLoad.trackId, resolved.file).catch(() => {});
                   playMediaBlob(fileRec, resolved.file, trackToLoad.autoPlay ?? true);
                   relinkFolderHandles(dirHandle).catch(() => {});
                   return;
@@ -812,7 +760,6 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
             if (res === 'granted') {
               const file = await fileRecord.handle.getFile();
               registerMemoryFile(fileRecord.id, file, fileRecord.handle);
-              persistBinaryBlob(fileRecord.id, file).catch(() => {});
               setNeedsPermission(false);
               setPendingTrack(null);
               setErrorMessage(null);
@@ -840,7 +787,6 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                 const resolved = await resolveFileFromDirectory(dirHandle, fileRec.relativePath || '', fileRec.name);
                 if (resolved?.file) {
                   registerMemoryFile(trackToLoad.trackId, resolved.file, resolved.handle);
-                  persistBinaryBlob(trackToLoad.trackId, resolved.file).catch(() => {});
                   playMediaBlob(fileRec, resolved.file, trackToLoad.autoPlay ?? true);
                   relinkFolderHandles(dirHandle).catch(() => {});
                   return;
@@ -1336,16 +1282,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
               size: blob.size,
               lastModified: Date.now(),
               createdAt: Date.now(),
-              blobFallback: blob,
             };
-            getMediaFile(trackId).then((existing) => {
-              if (existing) {
-                existing.blobFallback = blob;
-                saveMediaFile(existing);
-              } else {
-                saveMediaFile(fileRec);
-              }
-            });
 
             const isAlreadyLoaded =
               currentTrackRef.current?.id === trackId &&
@@ -1521,7 +1458,6 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           size: blob.size,
           lastModified: Date.now(),
           createdAt: Date.now(),
-          blobFallback: blob,
         };
 
         const isAlreadyLoaded =
