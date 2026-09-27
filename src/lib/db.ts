@@ -475,6 +475,29 @@ export async function saveMediaFilesBatch(files: MediaFile[]): Promise<{ savedCo
   });
 }
 
+export function isSyntheticSampleClip(name: string): boolean {
+  if (!name) return false;
+  const lower = name.toLowerCase().trim();
+  return (
+    lower.includes('sample video') ||
+    lower.includes('sample_video') ||
+    lower.includes('sample clip') ||
+    lower.includes('sample_clip') ||
+    lower.startsWith('clip 1') ||
+    lower.startsWith('clip_1') ||
+    lower.startsWith('clip 2') ||
+    lower.startsWith('clip_2') ||
+    lower.startsWith('clip 3') ||
+    lower.startsWith('clip_3') ||
+    lower.startsWith('clip 4') ||
+    lower.startsWith('clip_4') ||
+    lower.startsWith('clip 5') ||
+    lower.startsWith('clip_5') ||
+    lower.startsWith('clip 6') ||
+    lower.startsWith('clip_6')
+  );
+}
+
 export async function getAllMediaFiles(): Promise<MediaFile[]> {
   const db = await getDB();
   const records = await new Promise<MediaFile[]>((resolve, reject) => {
@@ -485,8 +508,16 @@ export async function getAllMediaFiles(): Promise<MediaFile[]> {
     req.onerror = () => reject(req.error);
   });
 
+  // Background purge any old synthetic test clips from the database
+  const sampleRecords = records.filter((r) => isSyntheticSampleClip(r.name));
+  if (sampleRecords.length > 0) {
+    for (const s of sampleRecords) {
+      deleteMediaFile(s.id).catch(() => {});
+    }
+  }
+
   const dbFiles = records
-    .filter((record) => !record.id?.startsWith('__dir_'))
+    .filter((record) => !record.id?.startsWith('__dir_') && !isSyntheticSampleClip(record.name))
     .map((record) => {
       const cached = getMemoryFile(record.id);
       if (record.blobFallback && !cached?.file) {
@@ -505,8 +536,8 @@ export async function getAllMediaFiles(): Promise<MediaFile[]> {
     fileMap.set(f.id, f);
   }
   for (const [id, mem] of memoryFileRegistry.entries()) {
-    if (!id.startsWith('__dir_') && !fileMap.has(id) && (mem.file || mem.handle)) {
-      const fileName = (mem.file as any)?.name || mem.handle?.name || 'Video File';
+    const fileName = (mem.file as any)?.name || mem.handle?.name || 'Video File';
+    if (!id.startsWith('__dir_') && !isSyntheticSampleClip(fileName) && !fileMap.has(id) && (mem.file || mem.handle)) {
       fileMap.set(id, {
         id,
         name: fileName,

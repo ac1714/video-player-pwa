@@ -1298,14 +1298,21 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   };
 
   const handleDeleteMediaFile = async (id: string, name: string) => {
-    if (confirm(`Remove "${name}"?`)) {
-      await deleteMediaFile(id);
-      if (activeTrackId === id) {
-        setActiveTrackIdState(null);
-        setActiveTrack(null);
-      }
-      await loadDatabase();
+    // Optimistically remove from state immediately so it disappears with 0 delay
+    setMediaFiles((prev) => prev.filter((f) => f.id !== id));
+    setQueue((prev) => prev.filter((trackId) => trackId !== id));
+    if (activeTrackId === id) {
+      setActiveTrackIdState(null);
+      setActiveTrack(null);
+      syncChannel.post({ type: 'PAUSE' });
     }
+    try {
+      await deleteMediaFile(id);
+      setStatusNotice(`Removed "${name}".`);
+    } catch (e) {
+      console.warn('Error deleting media file:', e);
+    }
+    await loadDatabase();
   };
 
   const filteredFiles = useMemo(() => {
@@ -2551,10 +2558,22 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
               )}
             </div>
 
-            <div className="pt-2 flex justify-end">
+            <div className="pt-2 flex items-center justify-between">
+              <button
+                onClick={() => {
+                  if (inspectingFile) {
+                    handleDeleteMediaFile(inspectingFile.id, inspectingFile.name);
+                    setInspectingFile(null);
+                  }
+                }}
+                className="px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Remove from Library</span>
+              </button>
               <button
                 onClick={() => setInspectingFile(null)}
-                className="px-3.5 py-1.5 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-black text-xs font-semibold transition"
+                className="px-3.5 py-1.5 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-black text-xs font-semibold transition cursor-pointer"
               >
                 Close
               </button>
