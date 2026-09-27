@@ -2098,21 +2098,6 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         } cursor-pointer transition-all duration-200`}
       />
 
-      {/* Floating Picture-in-Picture Controls Indicator - Unobtrusive corner pill that keeps video 100% visible */}
-      {isPiP && (
-        <div className="absolute top-3 right-3 z-30 pointer-events-auto">
-          <button
-            id="pip-exit-indicator-btn"
-            onClick={togglePiP}
-            className="flex items-center gap-2 bg-neutral-900/90 hover:bg-neutral-800/95 backdrop-blur-md border border-amber-500/40 text-amber-400 text-xs font-semibold px-3 py-1.5 rounded-full shadow-lg transition cursor-pointer active:scale-95 group"
-            title="Floating controls window is open. Click to close."
-          >
-            <PictureInPicture2 className="w-3.5 h-3.5 animate-pulse text-amber-400" />
-            <span>Floating Controls Active</span>
-            <span className="text-neutral-400 group-hover:text-white ml-0.5">✕</span>
-          </button>
-        </div>
-      )}
 
       {/* Fit Mode Notice Badge */}
       {fitModeNotice && (
