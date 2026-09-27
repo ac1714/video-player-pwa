@@ -589,6 +589,12 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
           }
           break;
 
+        case 'QUEUE_UPDATED':
+          if (Array.isArray(msg.payload?.queue)) {
+            setQueue(msg.payload.queue);
+          }
+          break;
+
         case 'STATE_CHANGE': {
           setIsPlayerConnected(true);
           setPlayerState(msg.payload.state);

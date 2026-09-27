@@ -32,6 +32,10 @@ import {
   FastForward,
   RotateCcw,
   RotateCw,
+  ListVideo,
+  ChevronsUp,
+  Trash2,
+  X,
 } from 'lucide-react';
 import { MediaFile, SyncMessage } from '../types';
 import { getMediaFile, getMemoryFile, registerMemoryFile, getAllDirectoryHandles, getAllMediaFiles, retrieveBinaryBlob } from '../lib/db';
@@ -51,6 +55,7 @@ import {
   setLastPlaybackTime,
   setLoopSetting,
   getStoredQueue,
+  setStoredQueue,
 } from '../lib/localStorageState';
 
 interface PlayerViewProps {
@@ -159,6 +164,87 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
   const pipWindowRef = useRef<any>(null);
   const latestExternalTrackIdRef = useRef<string | null>(null);
   const latestExternalTimeRef = useRef<number>(0);
+
+  // Queue Overlay in dedicated / new tab mode
+  const [showQueueOverlay, setShowQueueOverlay] = useState<boolean>(false);
+  const [queueIds, setQueueIds] = useState<string[]>(() => getStoredQueue());
+  const [queueFiles, setQueueFiles] = useState<MediaFile[]>([]);
+
+  const refreshQueueFiles = useCallback(async (ids?: string[]) => {
+    const targetIds = ids !== undefined ? ids : getStoredQueue();
+    try {
+      const all = await getAllMediaFiles();
+      const map = new Map<string, MediaFile>(all.map((f) => [f.id, f]));
+      const resolved: MediaFile[] = [];
+      for (const id of targetIds) {
+        const found = map.get(id);
+        if (found) {
+          resolved.push(found);
+        } else {
+          const mem = getMemoryFile(id);
+          if (mem?.file) {
+            resolved.push({
+              id,
+              name: (mem.file as any).name || 'Video Track',
+              mimeType: mem.file.type || 'video/mp4',
+              size: mem.file.size,
+              duration: 0,
+              lastModified: Date.now(),
+              createdAt: Date.now(),
+            });
+          }
+        }
+      }
+      setQueueFiles(resolved);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (showQueueOverlay) {
+      const q = getStoredQueue();
+      setQueueIds(q);
+      refreshQueueFiles(q);
+    }
+  }, [showQueueOverlay, refreshQueueFiles]);
+
+  useEffect(() => {
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === 'pwa_video_playback_queue') {
+        const q = getStoredQueue();
+        setQueueIds(q);
+        refreshQueueFiles(q);
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, [refreshQueueFiles]);
+
+  const handleMoveQueueToTop = (index: number) => {
+    if (index <= 0) return;
+    const copy = [...queueIds];
+    const [item] = copy.splice(index, 1);
+    copy.unshift(item);
+    setQueueIds(copy);
+    setStoredQueue(copy);
+    syncChannel.post({ type: 'QUEUE_UPDATED', payload: { queue: copy } });
+    refreshQueueFiles(copy);
+  };
+
+  const handleRemoveQueueItem = (index: number) => {
+    const copy = [...queueIds];
+    copy.splice(index, 1);
+    setQueueIds(copy);
+    setStoredQueue(copy);
+    syncChannel.post({ type: 'QUEUE_UPDATED', payload: { queue: copy } });
+    refreshQueueFiles(copy);
+  };
+
+  const handleClearEntireQueue = () => {
+    setQueueIds([]);
+    setStoredQueue([]);
+    syncChannel.post({ type: 'QUEUE_UPDATED', payload: { queue: [] } });
+    setQueueFiles([]);
+  };
 
   // Check Picture in Picture support
   useEffect(() => {
@@ -1140,6 +1226,16 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           }
           break;
 
+        case 'q':
+        case 'Q':
+          e.preventDefault();
+          setShowQueueOverlay((prev) => !prev);
+          break;
+
+        case 'Escape':
+          setShowQueueOverlay(false);
+          break;
+
         default:
           break;
       }
@@ -1313,6 +1409,14 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
   useEffect(() => {
     const unsubscribe = syncChannel.subscribe((msg: SyncMessage) => {
       switch (msg.type) {
+        case 'QUEUE_UPDATED':
+          if (Array.isArray(msg.payload?.queue)) {
+            setQueueIds(msg.payload.queue);
+            setStoredQueue(msg.payload.queue);
+            refreshQueueFiles(msg.payload.queue);
+          }
+          break;
+
         case 'LOAD_TRACK':
           if (embedded && isExternalActiveRef.current) return;
           loadTrackById(msg.payload.trackId, msg.payload.autoPlay ?? true, msg.payload.blob, msg.payload.currentTime ?? 0);
@@ -2144,6 +2248,23 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
               </button>
             )}
 
+            {/* Queue Overlay Toggle Button (New tab / Standalone player) */}
+            {!embedded && (
+              <button
+                id="player-queue-btn"
+                onClick={() => setShowQueueOverlay((prev) => !prev)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border transition cursor-pointer text-xs font-semibold ${
+                  showQueueOverlay
+                    ? 'bg-amber-500 text-black border-amber-400 shadow-md'
+                    : 'bg-black/80 hover:bg-neutral-900 border-neutral-800 text-neutral-300 hover:text-white'
+                }`}
+                title={showQueueOverlay ? 'Hide Queue Overlay (Q)' : 'Show Queue Overlay (Q)'}
+              >
+                <ListVideo className="w-4 h-4 text-amber-400" />
+                <span>Queue{queueIds.length > 0 ? ` (${queueIds.length})` : ''}</span>
+              </button>
+            )}
+
             <button
               onClick={toggleFullscreen}
               className="p-2 rounded-xl bg-black/80 hover:bg-neutral-900 border border-neutral-800 text-neutral-300 hover:text-white transition cursor-pointer"
@@ -2280,6 +2401,25 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                   </button>
                 )}
 
+                {/* Bottom Queue Toggle Button */}
+                {!embedded && (
+                  <button
+                    id="player-bottom-queue-btn"
+                    onClick={() => setShowQueueOverlay((prev) => !prev)}
+                    className={`p-1.5 rounded-lg border transition cursor-pointer flex items-center gap-1 ${
+                      showQueueOverlay
+                        ? 'bg-amber-500 text-black border-amber-400 shadow-sm'
+                        : 'border-neutral-800 text-neutral-300 hover:text-white hover:border-neutral-700 bg-neutral-900/80'
+                    }`}
+                    title={showQueueOverlay ? 'Hide Queue Overlay (Q)' : 'Show Queue Overlay (Q)'}
+                  >
+                    <ListVideo className="w-3.5 h-3.5" />
+                    <span className="text-[11px] font-medium hidden md:inline">
+                      Queue{queueIds.length > 0 ? ` (${queueIds.length})` : ''}
+                    </span>
+                  </button>
+                )}
+
                 {/* Volume slider (Full view only) */}
                 {!embedded && (
                   <div className="flex items-center gap-2">
@@ -2360,6 +2500,149 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* Playback Queue Overlay (in new tab / standalone player mode) */}
+      {!embedded && showQueueOverlay && (
+        <div
+          id="player-queue-overlay-backdrop"
+          onClick={() => setShowQueueOverlay(false)}
+          className="absolute inset-0 z-40 bg-black/50 backdrop-blur-xs flex justify-end animate-in fade-in duration-200"
+        >
+          <div
+            id="player-queue-overlay-panel"
+            onClick={(e) => e.stopPropagation()}
+            className="w-full sm:w-96 md:w-[420px] max-w-full h-full bg-neutral-950/95 backdrop-blur-2xl border-l border-neutral-800 shadow-2xl flex flex-col pointer-events-auto text-neutral-100 animate-in slide-in-from-right duration-250"
+          >
+            {/* Overlay Header */}
+            <div className="p-4 border-b border-neutral-800/80 flex items-center justify-between bg-neutral-900/40">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                  <ListVideo className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white tracking-tight flex items-center gap-2">
+                    <span>Playback Queue</span>
+                    <span className="text-[11px] font-mono font-medium px-2 py-0.5 rounded-full bg-neutral-800 text-neutral-300 border border-neutral-700">
+                      {queueIds.length}
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-neutral-400 truncate mt-0.5">
+                    {queueIds.length === 1 ? '1 video queued' : `${queueIds.length} videos queued`}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                {queueIds.length > 0 && (
+                  <button
+                    onClick={handleClearEntireQueue}
+                    className="p-1.5 rounded-lg text-neutral-400 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                    title="Clear entire queue"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
+                <button
+                  onClick={() => setShowQueueOverlay(false)}
+                  className="p-1.5 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800 transition cursor-pointer"
+                  title="Close Queue (Esc)"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Queue Item List */}
+            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+              {queueFiles.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center p-6 text-neutral-500">
+                  <ListVideo className="w-12 h-12 mb-3 stroke-[1.2] text-neutral-600" />
+                  <p className="text-sm font-semibold text-neutral-300">Your queue is empty</p>
+                  <p className="text-xs text-neutral-500 mt-1 max-w-[240px]">
+                    Add videos to your queue from the library or playlists tab in the controller window.
+                  </p>
+                </div>
+              ) : (
+                queueFiles.map((file, idx) => {
+                  const isPlayingThis = currentTrack?.id === file.id;
+                  return (
+                    <div
+                      key={`${file.id}-${idx}`}
+                      className={`flex items-center justify-between p-2.5 rounded-xl border transition ${
+                        isPlayingThis
+                          ? 'bg-amber-500/10 border-amber-500/40 text-white shadow-xs'
+                          : 'bg-neutral-900/60 border-neutral-800/80 hover:bg-neutral-800/70 text-neutral-200'
+                      }`}
+                    >
+                      {/* Play Button & Info */}
+                      <div className="flex items-center gap-2.5 min-w-0 flex-1 pr-2">
+                        <button
+                          onClick={() => loadTrackById(file.id, true)}
+                          className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition cursor-pointer ${
+                            isPlayingThis
+                              ? 'bg-amber-500 text-black shadow'
+                              : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300'
+                          }`}
+                          title="Play this track"
+                        >
+                          <Play className="w-3 h-3 fill-current ml-0.5" />
+                        </button>
+
+                        <div className="min-w-0 flex-1">
+                          <p
+                            onClick={() => loadTrackById(file.id, true)}
+                            className="text-xs font-semibold truncate cursor-pointer hover:underline"
+                            title={file.name}
+                          >
+                            {file.name}
+                          </p>
+                          <div className="flex items-center gap-2 text-[11px] font-sans font-medium tabular-nums text-neutral-400 mt-0.5">
+                            {file.duration && file.duration > 0 ? (
+                              <>
+                                <span className="font-semibold text-neutral-300">
+                                  {formatTime(file.duration)}
+                                </span>
+                                <span>•</span>
+                              </>
+                            ) : null}
+                            <span>{(file.size / (1024 * 1024)).toFixed(1)} MB</span>
+                            {isPlayingThis && (
+                              <span className="text-[10px] font-bold text-amber-400 bg-amber-500/20 px-1.5 py-0.2 rounded border border-amber-500/30 ml-1">
+                                Now Playing
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Actions */}
+                      <div className="flex items-center gap-1 shrink-0">
+                        {/* Move to Top */}
+                        <button
+                          disabled={idx === 0}
+                          onClick={() => handleMoveQueueToTop(idx)}
+                          className="p-1.5 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800 disabled:opacity-20 disabled:pointer-events-none transition cursor-pointer"
+                          title="Move to Top of Queue"
+                        >
+                          <ChevronsUp className="w-3.5 h-3.5" />
+                        </button>
+
+                        {/* Remove */}
+                        <button
+                          onClick={() => handleRemoveQueueItem(idx)}
+                          className="p-1.5 rounded-lg text-neutral-400 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                          title="Remove from Queue"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
