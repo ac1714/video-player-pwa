@@ -344,32 +344,10 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   // Load database state
   const loadDatabase = useCallback(async () => {
     try {
-      let [files, lists] = await Promise.all([getAllMediaFiles(), getAllPlaylists()]);
-
-      // Clean up and purge any synthetic test clips so the catalog is clean
-      const isSampleClip = (name: string) => {
-        const lower = name.toLowerCase();
-        return (
-          lower.includes('sample video') ||
-          lower.startsWith('clip 1:') ||
-          lower.startsWith('clip_1:') ||
-          lower.startsWith('clip 1') ||
-          lower.startsWith('clip_1')
-        );
-      };
-
-      const leftoverSamples = files.filter((f) => isSampleClip(f.name));
-      if (leftoverSamples.length > 0) {
-        for (const sample of leftoverSamples) {
-          try {
-            await deleteMediaFile(sample.id);
-          } catch {}
-        }
-        files = files.filter((f) => !isSampleClip(f.name));
-      }
+      const [filesRaw, lists] = await Promise.all([getAllMediaFiles(), getAllPlaylists()]);
 
       // Hydrate duration from localStorage cache if not in IndexedDB record
-      files = files.map((f) => {
+      let files = filesRaw.map((f) => {
         if (!f.duration) {
           try {
             const cached = localStorage.getItem(`pwa_video_duration_${f.id}`);
@@ -406,11 +384,14 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
       setMediaFiles(files);
       setPlaylists(lists);
 
-      // Initialize queue if empty
+      // Initialize or update queue with all available tracks
       setQueue((prevQueue) => {
         if (prevQueue.length > 0) {
           const valid = prevQueue.filter((id) => files.some((f) => f.id === id));
-          if (valid.length > 0) return valid;
+          const newTrackIds = files.filter((f) => !valid.includes(f.id)).map((f) => f.id);
+          const merged = [...valid, ...newTrackIds];
+          setStoredQueue(merged);
+          return merged;
         }
         const initialQueue = files.map((f) => f.id);
         setStoredQueue(initialQueue);

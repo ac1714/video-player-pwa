@@ -183,6 +183,7 @@ export async function ingestFileList(
         size: f.size,
         lastModified: f.lastModified,
         duration: cachedDur,
+        blobFallback: f,
         createdAt: matchedExisting ? matchedExisting.createdAt : Date.now(),
       };
 
@@ -362,6 +363,7 @@ async function scanDirectory(
             size: file.size,
             lastModified: file.lastModified,
             handle: fileHandle,
+            blobFallback: file,
             createdAt: matched ? matched.createdAt : Date.now(),
           } as MediaFile;
         } catch (e) {
@@ -758,6 +760,7 @@ export async function pickFilesAndIngest(
                 size: file.size,
                 lastModified: file.lastModified,
                 handle: handle,
+                blobFallback: file,
                 createdAt: matched ? matched.createdAt : Date.now(),
               } as MediaFile;
             } catch (err) {
@@ -936,6 +939,7 @@ export async function ingestDroppedItems(
                   size: file.size,
                   lastModified: file.lastModified,
                   handle: fileHandle,
+                  blobFallback: file,
                   createdAt: matched ? matched.createdAt : Date.now(),
                 };
                 collectedWithHandles.push(record);

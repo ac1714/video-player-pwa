@@ -387,6 +387,7 @@ async function saveMediaFileResilient(db: IDBDatabase, file: MediaFile): Promise
     mimeType: file.mimeType,
     size: file.size,
     lastModified: file.lastModified,
+    duration: file.duration,
     createdAt: file.createdAt || Date.now(),
     handle: file.handle,
     blobFallback: file.blobFallback,
@@ -403,6 +404,7 @@ async function saveMediaFileResilient(db: IDBDatabase, file: MediaFile): Promise
       mimeType: file.mimeType,
       size: file.size,
       lastModified: file.lastModified,
+      duration: file.duration,
       createdAt: file.createdAt || Date.now(),
       handle: file.handle,
     };
@@ -425,6 +427,7 @@ export async function saveMediaFile(file: MediaFile): Promise<void> {
     mimeType: file.mimeType,
     size: file.size,
     lastModified: file.lastModified,
+    duration: file.duration,
     createdAt: file.createdAt || Date.now(),
     handle: file.handle,
     blobFallback: file.blobFallback,
@@ -440,9 +443,12 @@ export async function saveMediaFilesBatch(files: MediaFile[]): Promise<{ savedCo
   // Register all in memory immediately for instantaneous in-session playback
   for (const f of files) {
     registerMemoryFile(f.id, f.blobFallback, f.handle);
+    if (f.blobFallback) {
+      persistBinaryBlob(f.id, f.blobFallback).catch(() => {});
+    }
   }
 
-  // Save lightweight metadata & handles to IndexedDB (zero quota exhaustion, < 2ms transaction)
+  // Save metadata & handles to IndexedDB
   return new Promise((resolve) => {
     try {
       const tx = db.transaction([STORE_MEDIA_FILES], 'readwrite');
@@ -456,10 +462,10 @@ export async function saveMediaFilesBatch(files: MediaFile[]): Promise<{ savedCo
           mimeType: f.mimeType,
           size: f.size,
           lastModified: f.lastModified,
+          duration: f.duration,
           createdAt: f.createdAt || Date.now(),
           handle: f.handle,
-          // Only preserve embedded blobs for tiny synthetic clips (< 5MB) without native handles
-          blobFallback: !f.handle && f.blobFallback && f.size && f.size < 5 * 1024 * 1024 ? f.blobFallback : undefined,
+          blobFallback: f.blobFallback,
         });
       }
 
@@ -475,27 +481,9 @@ export async function saveMediaFilesBatch(files: MediaFile[]): Promise<{ savedCo
   });
 }
 
-export function isSyntheticSampleClip(name: string): boolean {
-  if (!name) return false;
-  const lower = name.toLowerCase().trim();
-  return (
-    lower.includes('sample video') ||
-    lower.includes('sample_video') ||
-    lower.includes('sample clip') ||
-    lower.includes('sample_clip') ||
-    lower.startsWith('clip 1') ||
-    lower.startsWith('clip_1') ||
-    lower.startsWith('clip 2') ||
-    lower.startsWith('clip_2') ||
-    lower.startsWith('clip 3') ||
-    lower.startsWith('clip_3') ||
-    lower.startsWith('clip 4') ||
-    lower.startsWith('clip_4') ||
-    lower.startsWith('clip 5') ||
-    lower.startsWith('clip_5') ||
-    lower.startsWith('clip 6') ||
-    lower.startsWith('clip_6')
-  );
+export function isSyntheticSampleClip(_name: string): boolean {
+  // Never purge or misidentify user files
+  return false;
 }
 
 export async function getAllMediaFiles(): Promise<MediaFile[]> {
@@ -508,16 +496,8 @@ export async function getAllMediaFiles(): Promise<MediaFile[]> {
     req.onerror = () => reject(req.error);
   });
 
-  // Background purge any old synthetic test clips from the database
-  const sampleRecords = records.filter((r) => isSyntheticSampleClip(r.name));
-  if (sampleRecords.length > 0) {
-    for (const s of sampleRecords) {
-      deleteMediaFile(s.id).catch(() => {});
-    }
-  }
-
   const dbFiles = records
-    .filter((record) => !record.id?.startsWith('__dir_') && !isSyntheticSampleClip(record.name))
+    .filter((record) => !record.id?.startsWith('__dir_'))
     .map((record) => {
       const cached = getMemoryFile(record.id);
       if (record.blobFallback && !cached?.file) {
@@ -537,7 +517,7 @@ export async function getAllMediaFiles(): Promise<MediaFile[]> {
   }
   for (const [id, mem] of memoryFileRegistry.entries()) {
     const fileName = (mem.file as any)?.name || mem.handle?.name || 'Video File';
-    if (!id.startsWith('__dir_') && !isSyntheticSampleClip(fileName) && !fileMap.has(id) && (mem.file || mem.handle)) {
+    if (!id.startsWith('__dir_') && !fileMap.has(id) && (mem.file || mem.handle)) {
       fileMap.set(id, {
         id,
         name: fileName,
