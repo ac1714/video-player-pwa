@@ -1,0 +1,163 @@
+/**
+ * Main Application Component
+ * 
+ * Routes:
+ * - /player.html -> Dedicated Fullscreen Video Player (New Tab / Window)
+ * - /controller.html or / -> Split View (Controller + Embedded Player Preview) or Controller-only
+ */
+
+import React, { useEffect, useState } from 'react';
+import { ExternalLink, Sliders, X, Copy, Check } from 'lucide-react';
+import { ControllerView } from './components/ControllerView';
+import { PlayerView } from './components/PlayerView';
+import { ThemeProvider } from './lib/theme';
+import { syncChannel, getPopoutUrl } from './lib/syncChannel';
+import { getActivePlaybackState, saveActivePlaybackState } from './lib/localStorageState';
+
+function getInitialViewMode(): 'controller' | 'player' | 'split' {
+  if (typeof window === 'undefined') return 'split';
+  const path = window.location.pathname.toLowerCase();
+  const params = new URLSearchParams(window.location.search);
+  const viewParam = params.get('view')?.toLowerCase();
+  const modeParam = params.get('mode')?.toLowerCase();
+
+  if (
+    path.includes('player.html') ||
+    viewParam === 'player' ||
+    modeParam === 'external' ||
+    modeParam === 'player' ||
+    params.has('popout')
+  ) {
+    return 'player';
+  }
+  if (path.includes('controller.html') || viewParam === 'controller') {
+    return 'controller';
+  }
+  return 'split';
+}
+
+export default function App() {
+  const [viewMode, setViewMode] = useState<'controller' | 'player' | 'split'>(getInitialViewMode);
+  const [activeTrackId, setActiveTrackId] = useState<string>(() => getActivePlaybackState().trackId || '');
+  const [copiedUrl, setCopiedUrl] = useState<boolean>(false);
+  const [isExternalActive, setIsExternalActive] = useState<boolean>(false);
+
+  // Detect route based on URL path or search query parameter
+  useEffect(() => {
+    const handlePopState = () => {
+      setViewMode(getInitialViewMode());
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  // Listen to track load and state changes to update active track and popout state
+  useEffect(() => {
+    const unsub = syncChannel.subscribe((msg) => {
+      if (msg.type === 'LOAD_TRACK' && msg.payload.trackId) {
+        setActiveTrackId(msg.payload.trackId);
+      } else if (msg.type === 'PROVIDE_TRACK_DATA' && msg.payload.trackId) {
+        setActiveTrackId(msg.payload.trackId);
+      } else if (msg.type === 'PLAYER_CONNECTED' && msg.payload?.isPopout) {
+        setIsExternalActive(true);
+      } else if (msg.type === 'PLAYER_DISCONNECTED' && msg.payload?.isPopout) {
+        setIsExternalActive(false);
+      } else if (msg.type === 'BRING_PLAYBACK_HERE') {
+        setIsExternalActive(false);
+      }
+    });
+
+    return () => {
+      unsub();
+    };
+  }, []);
+
+  const handleOpenPopout = (trackIdToOpen?: string) => {
+    const targetId = trackIdToOpen || activeTrackId || (window as any).__PWA_ACTIVE_TRACK_ID__;
+    const currentState = getActivePlaybackState();
+    const curTime = (window as any).__PWA_ACTIVE_TRACK_TIME__ || currentState.lastTime || 0;
+    if (targetId) {
+      saveActivePlaybackState({ trackId: targetId, isPlaying: true, lastTime: curTime });
+      syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: targetId, autoPlay: true, currentTime: curTime } });
+    }
+    syncChannel.openPopoutWindow(targetId, curTime);
+  };
+
+  const handleCopyPlayerUrl = () => {
+    const url = getPopoutUrl(activeTrackId || undefined);
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(url);
+      setCopiedUrl(true);
+      setTimeout(() => setCopiedUrl(false), 2000);
+    }
+  };
+
+  return (
+    <ThemeProvider>
+      {viewMode === 'player' ? (
+        <PlayerView />
+      ) : (
+        <div className="flex flex-col min-h-screen bg-neutral-100 dark:bg-black text-neutral-900 dark:text-neutral-100 transition-colors">
+          <div className="flex-1 flex flex-col lg:grid lg:grid-cols-12 min-h-screen">
+            {/* Controller Column (Catalog, Playlists, Ingestion) */}
+            <div
+              className={`border-r border-neutral-200 dark:border-neutral-800 overflow-y-auto ${
+                viewMode === 'split'
+                  ? 'lg:col-span-7 xl:col-span-7 order-2 lg:order-1'
+                  : 'w-full order-1'
+              }`}
+            >
+              <ControllerView
+                onToggleSplitMode={() =>
+                  setViewMode(viewMode === 'split' ? 'controller' : 'split')
+                }
+                isSplitMode={viewMode === 'split'}
+                viewMode={viewMode}
+                onSetViewMode={setViewMode}
+              />
+            </div>
+
+            {/* Video Player Column (Visible in Split mode) */}
+            {viewMode === 'split' && (
+              <div className="lg:col-span-5 xl:col-span-5 h-[340px] sm:h-[420px] lg:h-[calc(100vh-5.5rem)] sticky top-0 bg-black p-3 sm:p-4 flex flex-col z-20 order-1 lg:order-2 border-b lg:border-b-0 border-neutral-800">
+                <div className="flex items-center justify-between pb-2 text-xs text-neutral-400">
+                  <span className="font-semibold text-neutral-200">Video Player</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      id="split-pop-out-btn"
+                      onClick={() => handleOpenPopout()}
+                      className="px-2.5 py-1 rounded-md bg-amber-500 hover:bg-amber-400 text-black font-semibold transition cursor-pointer flex items-center gap-1.5 shadow-sm active:scale-95 text-xs"
+                      title="Open dedicated video player in a new browser tab"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Open in New Tab</span>
+                    </button>
+                    <button
+                      onClick={() => setViewMode('controller')}
+                      className="text-neutral-400 hover:text-white font-medium transition cursor-pointer px-2 py-1"
+                      title="Hide player preview"
+                    >
+                      Hide
+                    </button>
+                  </div>
+                </div>
+                <div className="flex-1 min-h-0 relative">
+                  <PlayerView
+                    embedded={true}
+                    isExternalActive={isExternalActive}
+                    onOpenPopout={() => handleOpenPopout()}
+                    onBringBack={() => {
+                      syncChannel.post({ type: 'BRING_PLAYBACK_HERE' });
+                      setIsExternalActive(false);
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </ThemeProvider>
+  );
+}

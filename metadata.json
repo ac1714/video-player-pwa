@@ -1,0 +1,6 @@
+{
+  "name": "PWA Video Sync",
+  "description": "Multi-page PWA video player and controller with BroadcastChannel sync and persistent local media storage.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
