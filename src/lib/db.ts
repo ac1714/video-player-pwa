@@ -465,7 +465,6 @@ export async function saveMediaFilesBatch(files: MediaFile[]): Promise<{ savedCo
           duration: f.duration,
           createdAt: f.createdAt || Date.now(),
           handle: f.handle,
-          blobFallback: f.blobFallback,
         });
       }
 
