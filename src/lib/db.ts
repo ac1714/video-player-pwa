@@ -442,54 +442,37 @@ export async function saveMediaFilesBatch(files: MediaFile[]): Promise<{ savedCo
     registerMemoryFile(f.id, f.blobFallback, f.handle);
   }
 
-  // Helper to run batch put
-  const runBatch = (withBlobs: boolean): Promise<{ savedCount: number; errors: number }> => {
-    return new Promise((resolve) => {
-      try {
-        const tx = db.transaction([STORE_MEDIA_FILES], 'readwrite');
-        const store = tx.objectStore(STORE_MEDIA_FILES);
+  // Save lightweight metadata & handles to IndexedDB (zero quota exhaustion, < 2ms transaction)
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction([STORE_MEDIA_FILES], 'readwrite');
+      const store = tx.objectStore(STORE_MEDIA_FILES);
 
-        for (const f of files) {
-          store.put({
-            id: f.id,
-            name: f.name,
-            relativePath: f.relativePath || f.name,
-            mimeType: f.mimeType,
-            size: f.size,
-            lastModified: f.lastModified,
-            createdAt: f.createdAt || Date.now(),
-            handle: f.handle,
-            // Embed blob in IndexedDB record for instant access across reloads/windows
-            blobFallback: withBlobs && f.blobFallback && f.size && f.size < 150 * 1024 * 1024 ? f.blobFallback : undefined,
-          });
-        }
-
-        tx.oncomplete = () => resolve({ savedCount: files.length, errors: 0 });
-        tx.onerror = (e) => {
-          console.warn('Batch put error:', e);
-          resolve({ savedCount: 0, errors: files.length });
-        };
-      } catch (err) {
-        console.warn('Batch transaction error:', err);
-        resolve({ savedCount: 0, errors: files.length });
+      for (const f of files) {
+        store.put({
+          id: f.id,
+          name: f.name,
+          relativePath: f.relativePath || f.name,
+          mimeType: f.mimeType,
+          size: f.size,
+          lastModified: f.lastModified,
+          createdAt: f.createdAt || Date.now(),
+          handle: f.handle,
+          // Only preserve embedded blobs for tiny synthetic clips (< 5MB) without native handles
+          blobFallback: !f.handle && f.blobFallback && f.size && f.size < 5 * 1024 * 1024 ? f.blobFallback : undefined,
+        });
       }
-    });
-  };
 
-  let result = await runBatch(true);
-  if (result.savedCount === 0) {
-    // Retry without embedded blobs (preserving handles and full metadata)
-    result = await runBatch(false);
-  }
-
-  // Asynchronously persist blobs to binary storage layers (media_blobs, Cache Storage, OPFS)
-  for (const f of files) {
-    if (f.blobFallback) {
-      persistBinaryBlob(f.id, f.blobFallback).catch(() => {});
+      tx.oncomplete = () => resolve({ savedCount: files.length, errors: 0 });
+      tx.onerror = (e) => {
+        console.warn('Batch put error:', e);
+        resolve({ savedCount: 0, errors: files.length });
+      };
+    } catch (err) {
+      console.warn('Batch transaction error:', err);
+      resolve({ savedCount: 0, errors: files.length });
     }
-  }
-
-  return result;
+  });
 }
 
 export async function getAllMediaFiles(): Promise<MediaFile[]> {
@@ -502,19 +485,42 @@ export async function getAllMediaFiles(): Promise<MediaFile[]> {
     req.onerror = () => reject(req.error);
   });
 
-  return records
+  const dbFiles = records
     .filter((record) => !record.id?.startsWith('__dir_'))
     .map((record) => {
-      if (record.blobFallback) {
+      const cached = getMemoryFile(record.id);
+      if (record.blobFallback && !cached?.file) {
         registerMemoryFile(record.id, record.blobFallback, record.handle);
       }
-      const cached = getMemoryFile(record.id);
       return {
         ...record,
-        blobFallback: record.blobFallback || cached?.file,
+        blobFallback: cached?.file || record.blobFallback,
         handle: record.handle || cached?.handle,
       };
     });
+
+  // Ensure any newly ingested files in the in-memory registry are included even if IndexedDB is still settling
+  const fileMap = new Map<string, MediaFile>();
+  for (const f of dbFiles) {
+    fileMap.set(f.id, f);
+  }
+  for (const [id, mem] of memoryFileRegistry.entries()) {
+    if (!id.startsWith('__dir_') && !fileMap.has(id) && (mem.file || mem.handle)) {
+      const fileName = (mem.file as any)?.name || mem.handle?.name || 'Video File';
+      fileMap.set(id, {
+        id,
+        name: fileName,
+        mimeType: (mem.file as any)?.type || 'video/mp4',
+        size: (mem.file as any)?.size || 0,
+        lastModified: (mem.file as any)?.lastModified || Date.now(),
+        createdAt: Date.now(),
+        handle: mem.handle,
+        blobFallback: mem.file,
+      });
+    }
+  }
+
+  return Array.from(fileMap.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function getMediaFile(id: string): Promise<MediaFile | undefined> {

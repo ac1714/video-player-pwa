@@ -44,6 +44,12 @@ const SUPPORTED_EXTENSIONS = [
   '.h264',
   '.hevc',
   '.264',
+  '.av1',
+  '.h265',
+  '.265',
+  '.vp9',
+  '.m3u8',
+  '.mpd',
 ];
 
 const SUPPORTED_MIME_PREFIX = 'video/';
@@ -107,7 +113,7 @@ export async function ingestFileList(
 
   const collected: MediaFile[] = [];
   const list = Array.from(files);
-  const CHUNK_SIZE = 5;
+  const CHUNK_SIZE = 20;
   let currentChunk: MediaFile[] = [];
 
   for (const f of list) {
@@ -125,28 +131,31 @@ export async function ingestFileList(
         mimeType: f.type || getMimeFromFilename(f.name),
         size: f.size,
         lastModified: f.lastModified,
-        blobFallback: f,
         createdAt: matchedExisting ? matchedExisting.createdAt : Date.now(),
       };
 
       collected.push(record);
       currentChunk.push(record);
+      existingByName.set(record.name.toLowerCase(), record);
+      if (record.relativePath) {
+        existingByName.set(record.relativePath.toLowerCase(), record);
+      }
 
       if (currentChunk.length >= CHUNK_SIZE) {
-        await saveMediaFilesBatch(currentChunk);
         if (onProgress) {
           onProgress(currentChunk, collected.length);
         }
+        await saveMediaFilesBatch(currentChunk);
         currentChunk = [];
       }
     }
   }
 
   if (currentChunk.length > 0) {
-    await saveMediaFilesBatch(currentChunk);
     if (onProgress) {
       onProgress(currentChunk, collected.length);
     }
+    await saveMediaFilesBatch(currentChunk);
   }
 
   return {
@@ -253,19 +262,28 @@ async function scanDirectory(
   const videoHandles: FileSystemFileHandle[] = [];
   const subDirs: FileSystemDirectoryHandle[] = [];
 
-  for await (const entry of (dirHandle as any).values()) {
-    if (entry.kind === 'file') {
-      const fileHandle = entry as FileSystemFileHandle;
-      if (isVideoFile(fileHandle.name)) {
-        videoHandles.push(fileHandle);
+  try {
+    // Robust async iterator handling across different browser implementations
+    const entriesIterator = typeof (dirHandle as any).values === 'function'
+      ? (dirHandle as any).values()
+      : (dirHandle as any)[Symbol.asyncIterator]();
+
+    for await (const entry of entriesIterator) {
+      if (entry.kind === 'file') {
+        const fileHandle = entry as FileSystemFileHandle;
+        if (isVideoFile(fileHandle.name)) {
+          videoHandles.push(fileHandle);
+        }
+      } else if (entry.kind === 'directory') {
+        subDirs.push(entry as FileSystemDirectoryHandle);
       }
-    } else if (entry.kind === 'directory') {
-      subDirs.push(entry as FileSystemDirectoryHandle);
     }
+  } catch (iterErr) {
+    console.warn(`Could not iterate directory ${dirHandle.name}:`, iterErr);
   }
 
-  // Process video handles in parallel chunks of 5 for maximum speed and instant catalog rendering
-  const CHUNK_SIZE = 5;
+  // Process video handles in parallel chunks of 20 for maximum speed and instant catalog rendering
+  const CHUNK_SIZE = 20;
   for (let i = 0; i < videoHandles.length; i += CHUNK_SIZE) {
     const chunk = videoHandles.slice(i, i + CHUNK_SIZE);
     const resolvedChunk = await Promise.all(
@@ -285,7 +303,6 @@ async function scanDirectory(
             size: file.size,
             lastModified: file.lastModified,
             handle: fileHandle,
-            blobFallback: file,
             createdAt: matched ? matched.createdAt : Date.now(),
           } as MediaFile;
         } catch (e) {
@@ -298,14 +315,21 @@ async function scanDirectory(
     const validBatch = resolvedChunk.filter((item): item is MediaFile => item !== null);
     if (validBatch.length > 0) {
       collected.push(...validBatch);
-      await saveMediaFilesBatch(validBatch);
+      for (const item of validBatch) {
+        lookup!.set(item.name.toLowerCase(), item);
+        if (item.relativePath) {
+          lookup!.set(item.relativePath.toLowerCase(), item);
+        }
+      }
+      // Immediately notify the UI so files appear without waiting on disk persistence
       if (onProgress) {
         onProgress(validBatch, collected.length);
       }
+      await saveMediaFilesBatch(validBatch);
     }
   }
 
-  // Recurse subdirectories
+  // Recurse subdirectories and stream files with continuous progress
   for (const subDir of subDirs) {
     try {
       const nextPrefix = pathPrefix ? `${pathPrefix}/${subDir.name}` : subDir.name;
@@ -648,7 +672,7 @@ export async function pickFilesAndIngest(
       }
 
       const collected: MediaFile[] = [];
-      const CHUNK_SIZE = 5;
+      const CHUNK_SIZE = 20;
       for (let i = 0; i < handles.length; i += CHUNK_SIZE) {
         const chunk = handles.slice(i, i + CHUNK_SIZE);
         const resolved = await Promise.all(
@@ -666,7 +690,6 @@ export async function pickFilesAndIngest(
                 size: file.size,
                 lastModified: file.lastModified,
                 handle: handle,
-                blobFallback: file,
                 createdAt: matched ? matched.createdAt : Date.now(),
               } as MediaFile;
             } catch (err) {
@@ -679,10 +702,10 @@ export async function pickFilesAndIngest(
         const valid = resolved.filter((r): r is MediaFile => r !== null);
         if (valid.length > 0) {
           collected.push(...valid);
-          await saveMediaFilesBatch(valid);
           if (onProgress) {
             onProgress(valid, collected.length);
           }
+          await saveMediaFilesBatch(valid);
         }
       }
 
@@ -838,19 +861,22 @@ export async function ingestDroppedItems(
                 const fileId = matched ? matched.id : generateUUID();
 
                 registerMemoryFile(fileId, file, fileHandle);
-                collectedWithHandles.push({
+                const record: MediaFile = {
                   id: fileId,
                   name: fileHandle.name,
                   mimeType: file.type || getMimeFromFilename(fileHandle.name),
                   size: file.size,
                   lastModified: file.lastModified,
                   handle: fileHandle,
-                  blobFallback: file,
                   createdAt: matched ? matched.createdAt : Date.now(),
-                });
+                };
+                collectedWithHandles.push(record);
+                if (onProgress) {
+                  onProgress([record], collectedWithHandles.length);
+                }
               }
             } else if (handle.kind === 'directory') {
-              await scanDirectory(handle as FileSystemDirectoryHandle, collectedWithHandles, handle.name, existingByName);
+              await scanDirectory(handle as FileSystemDirectoryHandle, collectedWithHandles, handle.name, existingByName, onProgress);
             }
           }
         } catch (e) {
