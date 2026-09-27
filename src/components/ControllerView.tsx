@@ -2448,10 +2448,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                             <GripVertical className="w-4 h-4" />
                           </button>
 
-                          <span className="font-sans font-medium tabular-nums text-neutral-400 text-xs w-5 text-right shrink-0">
-                            {idx + 1}
-                          </span>
-
                           <button
                             onClick={() => dispatchLoadTrack(file.id, true)}
                             className={`w-7 h-7 rounded flex items-center justify-center shrink-0 transition cursor-pointer ${
@@ -2500,12 +2496,11 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                           <button
                             disabled={idx === 0}
                             onClick={() => handleMoveQueueItemToTop(idx)}
-                            className="flex items-center gap-1 px-2 py-1 rounded-lg border border-neutral-200 dark:border-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-800 text-xs font-semibold text-neutral-700 dark:text-neutral-300 disabled:opacity-20 disabled:pointer-events-none transition cursor-pointer"
+                            className="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-200 dark:hover:bg-neutral-800 disabled:opacity-20 disabled:pointer-events-none transition cursor-pointer"
                             title="Move to Top of Queue"
                             aria-label="Move to Top of Queue"
                           >
                             <ChevronsUp className="w-3.5 h-3.5" />
-                            <span>Top of Queue</span>
                           </button>
 
                           {/* Move Up */}
