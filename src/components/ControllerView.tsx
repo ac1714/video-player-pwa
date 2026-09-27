@@ -904,6 +904,31 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
       setStatusNotice(`Select folder or file to re-link disk access for "${targetFile?.name || 'video'}".`);
     }
 
+    const currentVol = volumeRef.current;
+    const currentMute = isMutedRef.current;
+
+    // Synchronous cross-window audio & track assignment while user click gesture is active
+    const popout = syncChannel.getPopoutWindow();
+    if (popout && !popout.closed) {
+      try {
+        (popout as any).__PWA_ACTIVE_TRACK_ID__ = trackId;
+        (popout as any).__PWA_ACTIVE_TRACK_TIME__ = startTime;
+        if (availableBlob) {
+          (popout as any).__PWA_ACTIVE_MEDIA_BLOB__ = availableBlob;
+        }
+        const popoutVid = popout.document?.getElementById('pwa-main-video-element') as HTMLVideoElement | null;
+        if (popoutVid) {
+          popoutVid.volume = currentVol;
+          popoutVid.muted = currentMute;
+        }
+        if (typeof (popout as any).__PWA_DIRECT_LOAD_TRACK__ === 'function') {
+          (popout as any).__PWA_DIRECT_LOAD_TRACK__(trackId, autoPlay, availableBlob, startTime, currentVol, currentMute);
+        }
+      } catch (e) {
+        console.warn('Direct popout window sync error:', e);
+      }
+    }
+
     syncChannel.post({
       type: 'LOAD_TRACK',
       payload: {
@@ -912,7 +937,14 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         currentTime: startTime,
         playlistId: activePlaylistId || undefined,
         blob: availableBlob,
+        volume: currentVol,
+        muted: currentMute,
       },
+    });
+
+    syncChannel.post({
+      type: 'SET_VOLUME',
+      payload: { volume: currentVol, muted: currentMute },
     });
 
     if (availableBlob) {

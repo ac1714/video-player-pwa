@@ -85,7 +85,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
   const hasMountedRef = useRef<boolean>(false);
   const handlePlayPrevRef = useRef<() => void>(() => {});
   const handlePlayNextRef = useRef<() => void>(() => {});
-  const loadTrackByIdRef = useRef<(trackId: string, autoPlay?: boolean, directBlob?: Blob, startTime?: number) => void>(() => {});
+  const loadTrackByIdRef = useRef<(trackId: string, autoPlay?: boolean, directBlob?: Blob, startTime?: number, optVolume?: number, optMuted?: boolean) => void>(() => {});
 
   useEffect(() => {
     setInternalExternalActive(isExternalActive);
@@ -354,7 +354,14 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
 
   // Play Media Blob directly
   const playMediaBlob = useCallback(
-    (fileRecord: MediaFile, mediaBlob: Blob, autoPlay: boolean = true, startTime?: number) => {
+    (
+      fileRecord: MediaFile,
+      mediaBlob: Blob,
+      autoPlay: boolean = true,
+      startTime?: number,
+      optVolume?: number,
+      optMuted?: boolean
+    ) => {
       setErrorMessage(null);
       setNeedsPermission(false);
       setPendingTrack(null);
@@ -363,6 +370,10 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         startTime !== undefined && startTime >= 0
           ? startTime
           : 0;
+
+      const state = getActivePlaybackState();
+      const targetVolume = typeof optVolume === 'number' ? optVolume : (state.volume ?? volume);
+      const targetMuted = typeof optMuted === 'boolean' ? optMuted : (state.muted ?? isMuted);
 
       // If this exact track is already loaded in the video element, do NOT recreate URL or reset currentTime to 0!
       if (
@@ -377,6 +388,12 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
             videoRef.current.currentTime = targetTime;
             setCurrentTime(targetTime);
           } catch {}
+          if (!embedded || !isExternalActiveRef.current) {
+            videoRef.current.volume = targetVolume;
+            videoRef.current.muted = targetMuted;
+            setVolume(targetVolume);
+            setIsMuted(targetMuted);
+          }
         }
         if (autoPlay && videoRef.current.paused) {
           const p = videoRef.current.play();
@@ -413,6 +430,8 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         isPlaying: autoPlay,
         lastTime: targetTime,
         currentTime: targetTime,
+        volume: targetVolume,
+        muted: targetMuted,
       });
 
       // Report active track to controller via SYNC_PONG with accurate initial duration
@@ -423,8 +442,8 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           state: autoPlay ? 'playing' : 'paused',
           currentTime: targetTime,
           duration: fileRecord.duration || 0,
-          volume,
-          muted: isMuted,
+          volume: targetVolume,
+          muted: targetMuted,
           loop: isLooping,
           isPopout: !embedded,
         },
@@ -435,12 +454,23 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         fileRecord.duration || 0,
         autoPlay,
         fileRecord.name,
-        isMuted
+        targetMuted
       );
 
       if (videoRef.current) {
         videoRef.current.src = blobUrl;
         videoRef.current.load();
+
+        if (!embedded || !isExternalActiveRef.current) {
+          videoRef.current.volume = targetVolume;
+          videoRef.current.muted = targetMuted;
+          setVolume(targetVolume);
+          setIsMuted(targetMuted);
+          wasAutoplayMutedRef.current = false;
+          setShowAutoplayUnmutePrompt(false);
+        } else {
+          videoRef.current.muted = true;
+        }
 
         const seekAndPlay = () => {
           if (!videoRef.current) return;
@@ -461,11 +491,23 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
             videoRef.current.addEventListener('canplay', onCanPlayOnce, { once: true });
           }
           if (autoPlay) {
+            if (!embedded || !isExternalActiveRef.current) {
+              videoRef.current.volume = targetVolume;
+              videoRef.current.muted = targetMuted;
+            }
             const playPromise = videoRef.current.play();
             if (playPromise !== undefined) {
               playPromise
                 .then(() => {
                   setIsPlaying(true);
+                  if (!embedded || !isExternalActiveRef.current) {
+                    videoRef.current.volume = targetVolume;
+                    videoRef.current.muted = targetMuted;
+                    setIsMuted(targetMuted);
+                    setVolume(targetVolume);
+                    wasAutoplayMutedRef.current = false;
+                    setShowAutoplayUnmutePrompt(false);
+                  }
                   syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing', isPopout: !embedded } });
                 })
                 .catch((playErr) => {
@@ -481,6 +523,18 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                       .then(() => {
                         setIsPlaying(true);
                         syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing', isPopout: !embedded } });
+                        if (!targetMuted && !embedded) {
+                          setTimeout(() => {
+                            if (videoRef.current && wasAutoplayMutedRef.current) {
+                              videoRef.current.muted = false;
+                              videoRef.current.volume = targetVolume;
+                              setIsMuted(false);
+                              setVolume(targetVolume);
+                              wasAutoplayMutedRef.current = false;
+                              setShowAutoplayUnmutePrompt(false);
+                            }
+                          }, 100);
+                        }
                       })
                       .catch(() => {
                         setIsPlaying(false);
@@ -499,12 +553,19 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         }
       }
     },
-    [revokeCurrentUrl, updateMediaSession, volume, isMuted, isLooping]
+    [revokeCurrentUrl, updateMediaSession, volume, isMuted, isLooping, embedded]
   );
 
   // Load track by ID from IndexedDB or memory
   const loadTrackById = useCallback(
-    async (trackId: string, autoPlay: boolean = true, directBlob?: Blob, startTime?: number) => {
+    async (
+      trackId: string,
+      autoPlay: boolean = true,
+      directBlob?: Blob,
+      startTime?: number,
+      optVolume?: number,
+      optMuted?: boolean
+    ) => {
       // 1. If this exact track is already loaded in the video element, do NOT reload or restart
       if (
         (currentTrackRef.current?.id === trackId || lastLoadedTrackIdRef.current === trackId) &&
@@ -699,7 +760,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
             return;
           }
 
-          playMediaBlob(fileRecord, mediaBlob, autoPlay, startTime);
+          playMediaBlob(fileRecord, mediaBlob, autoPlay, startTime, optVolume, optMuted);
           isLoadingTrackRef.current = false;
           return;
         }
@@ -796,6 +857,23 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
 
   useEffect(() => {
     loadTrackByIdRef.current = loadTrackById;
+    if (typeof window !== 'undefined') {
+      (window as any).__PWA_DIRECT_LOAD_TRACK__ = (
+        id: string,
+        auto: boolean,
+        blob?: Blob,
+        time?: number,
+        vol?: number,
+        mut?: boolean
+      ) => {
+        loadTrackById(id, auto, blob, time, vol, mut);
+      };
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        delete (window as any).__PWA_DIRECT_LOAD_TRACK__;
+      }
+    };
   }, [loadTrackById]);
 
   // Handle direct file input fallback for environments where directory picker is restricted
@@ -1510,7 +1588,14 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           const seekTime = (msg.payload.currentTime !== undefined && msg.payload.currentTime > 0)
             ? msg.payload.currentTime
             : undefined;
-          loadTrackById(msg.payload.trackId, msg.payload.autoPlay ?? true, msg.payload.blob, seekTime);
+          loadTrackById(
+            msg.payload.trackId,
+            msg.payload.autoPlay ?? true,
+            msg.payload.blob,
+            seekTime,
+            msg.payload.volume,
+            msg.payload.muted
+          );
           break;
 
         case 'PROVIDE_TRACK_DATA': {

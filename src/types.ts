@@ -39,6 +39,8 @@ export type SyncMessage =
         playlistId?: string;
         blob?: Blob;
         currentTime?: number;
+        volume?: number;
+        muted?: boolean;
       };
     }
   | {

@@ -74,7 +74,7 @@ export default function App() {
         if (msg.payload.currentTime !== undefined) {
           latestTimeRef.current = msg.payload.currentTime;
         }
-        if (msg.payload?.isPopout) {
+        if (msg.payload?.isPopout && viewMode !== 'player') {
           setIsExternalActive(true);
           const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
           if (videoEl) {
@@ -90,7 +90,7 @@ export default function App() {
         if (msg.payload.currentTime !== undefined) {
           latestTimeRef.current = msg.payload.currentTime;
         }
-        if (msg.payload?.isPopout) {
+        if (msg.payload?.isPopout && viewMode !== 'player') {
           setIsExternalActive(true);
           const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
           if (videoEl) {
@@ -101,13 +101,15 @@ export default function App() {
           }
         }
       } else if (msg.type === 'PLAYER_CONNECTED' && msg.payload?.isPopout) {
-        setIsExternalActive(true);
-        const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
-        if (videoEl) {
-          try {
-            if (!videoEl.paused) videoEl.pause();
-            videoEl.muted = true;
-          } catch {}
+        if (viewMode !== 'player') {
+          setIsExternalActive(true);
+          const videoEl = typeof document !== 'undefined' ? (document.getElementById('pwa-main-video-element') as HTMLVideoElement | null) : null;
+          if (videoEl) {
+            try {
+              if (!videoEl.paused) videoEl.pause();
+              videoEl.muted = true;
+            } catch {}
+          }
         }
       } else if (msg.type === 'PLAYER_DISCONNECTED' && msg.payload?.isPopout) {
         setIsExternalActive(false);
