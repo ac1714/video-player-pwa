@@ -15,7 +15,17 @@ export function getPopoutUrl(trackId?: string, currentTime?: number): string {
   if (typeof window === 'undefined') return '/player.html';
   try {
     const isDevOrSubpath = window.location.pathname.includes('/player.html');
-    const basePath = isDevOrSubpath ? window.location.pathname : '/player.html';
+    let basePath: string;
+    if (isDevOrSubpath) {
+      basePath = window.location.pathname;
+    } else {
+      const segs = window.location.pathname.split('/').filter(Boolean);
+      if (segs.length > 0 && segs[segs.length - 1].endsWith('.html')) {
+        segs.pop();
+      }
+      const prefix = segs.length > 0 ? `/${segs.join('/')}` : '';
+      basePath = `${prefix}/player.html`;
+    }
     const url = new URL(basePath, window.location.origin);
     url.searchParams.set('view', 'player');
     url.searchParams.set('mode', 'external');
@@ -27,7 +37,7 @@ export function getPopoutUrl(trackId?: string, currentTime?: number): string {
     }
     return url.toString();
   } catch {
-    const base = trackId ? `/player.html?view=player&mode=external&trackId=${encodeURIComponent(trackId)}` : '/player.html';
+    const base = trackId ? `player.html?view=player&mode=external&trackId=${encodeURIComponent(trackId)}` : 'player.html';
     return currentTime && currentTime > 0 ? `${base}&time=${currentTime.toFixed(2)}` : base;
   }
 }
