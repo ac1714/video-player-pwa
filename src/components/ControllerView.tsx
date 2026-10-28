@@ -514,6 +514,9 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
               videoEl.muted = true;
             } catch {}
           }
+          // Sync current queue immediately to connected player
+          syncChannel.post({ type: 'QUEUE_UPDATED', payload: { queue: queueRef.current } });
+
           // Only send track payload to dedicated external popout window to avoid loops with embedded player
           if (msg.payload?.isPopout) {
             const currentId = activeTrackIdRef.current || activeTrackId || (mediaFilesRef.current?.[0]?.id);
@@ -690,6 +693,12 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
         case 'SYNC_PING': {
           setIsPlayerConnected(true);
+          syncChannel.post({ type: 'QUEUE_UPDATED', payload: { queue: queueRef.current } });
+          break;
+        }
+
+        case 'AUTOPLAY_CHANGE': {
+          setAutoPlayNext(msg.payload.autoPlay);
           break;
         }
 

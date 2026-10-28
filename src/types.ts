@@ -163,6 +163,12 @@ export type SyncMessage =
       };
     }
   | {
+      type: 'AUTOPLAY_CHANGE';
+      payload: {
+        autoPlay: boolean;
+      };
+    }
+  | {
       type: 'SET_LOOP';
       payload: {
         loop: boolean;

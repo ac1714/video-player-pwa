@@ -56,6 +56,8 @@ import {
   setLoopSetting,
   getStoredQueue,
   setStoredQueue,
+  getAutoPlaySetting,
+  setAutoPlaySetting,
 } from '../lib/localStorageState';
 
 interface PlayerViewProps {
@@ -224,6 +226,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
   const [showQueueOverlay, setShowQueueOverlay] = useState<boolean>(false);
   const [queueIds, setQueueIds] = useState<string[]>(() => getStoredQueue());
   const [queueFiles, setQueueFiles] = useState<MediaFile[]>([]);
+  const [autoPlayNext, setAutoPlayNext] = useState<boolean>(() => getAutoPlaySetting());
 
   const refreshQueueFiles = useCallback(async (ids?: string[]) => {
     const targetIds = ids !== undefined ? ids : getStoredQueue();
@@ -254,13 +257,18 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     } catch {}
   }, []);
 
+  // Sync queue files on mount and whenever queueIds changes
   useEffect(() => {
-    if (showQueueOverlay) {
-      const q = getStoredQueue();
+    refreshQueueFiles(queueIds);
+  }, [queueIds, refreshQueueFiles]);
+
+  useEffect(() => {
+    const q = getStoredQueue();
+    if (q.length > 0) {
       setQueueIds(q);
       refreshQueueFiles(q);
     }
-  }, [showQueueOverlay, refreshQueueFiles]);
+  }, [refreshQueueFiles]);
 
   useEffect(() => {
     const handleStorage = (e: StorageEvent) => {
@@ -268,6 +276,8 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         const q = getStoredQueue();
         setQueueIds(q);
         refreshQueueFiles(q);
+      } else if (e.key === 'pwa_video_autoplay') {
+        setAutoPlayNext(getAutoPlaySetting());
       }
     };
     window.addEventListener('storage', handleStorage);
@@ -299,6 +309,18 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     setStoredQueue([]);
     syncChannel.post({ type: 'QUEUE_UPDATED', payload: { queue: [] } });
     setQueueFiles([]);
+  };
+
+  const handlePlayQueueTrack = (trackId: string) => {
+    loadTrackById(trackId, true, undefined, 0);
+    syncChannel.post({
+      type: 'LOAD_TRACK',
+      payload: { trackId, autoPlay: true, currentTime: 0 },
+    });
+    syncChannel.post({
+      type: 'STATE_CHANGE',
+      payload: { state: 'playing', isPopout: !embedded },
+    });
   };
 
   // Check Picture in Picture support
@@ -1207,10 +1229,6 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
 
   // Previous and Next Track Handlers for pop-out tab - Always start at beginning (0s)
   const handlePlayPrev = useCallback(async () => {
-    // 1. Post to syncChannel so ControllerView handles it if connected
-    syncChannel.post({ type: 'PREV_TRACK' });
-
-    // 2. Fallback / autonomous handling if ControllerView is not active:
     const queue = getStoredQueue();
     const currentId = currentTrackRef.current?.id;
     if (queue.length > 0) {
@@ -1219,11 +1237,15 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       const prevId = queue[prevIdx];
       if (prevId) {
         loadTrackById(prevId, true, undefined, 0);
+        syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: prevId, autoPlay: true, currentTime: 0 } });
+        syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing', isPopout: !embedded } });
         return;
       }
     }
 
-    // 3. If queue is empty, check all media files in database:
+    syncChannel.post({ type: 'PREV_TRACK' });
+
+    // Fallback to all database files if queue is empty
     try {
       const allFiles = await getAllMediaFiles();
       if (allFiles.length > 1) {
@@ -1232,19 +1254,16 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         const target = allFiles[prevIdx];
         if (target) {
           loadTrackById(target.id, true, undefined, 0);
+          syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: target.id, autoPlay: true, currentTime: 0 } });
         }
       } else if (videoRef.current) {
         videoRef.current.currentTime = 0;
         setCurrentTime(0);
       }
     } catch {}
-  }, [loadTrackById]);
+  }, [loadTrackById, embedded]);
 
   const handlePlayNext = useCallback(async () => {
-    // 1. Post to syncChannel so ControllerView handles it if connected
-    syncChannel.post({ type: 'NEXT_TRACK' });
-
-    // 2. Fallback / autonomous handling if ControllerView is not active:
     const queue = getStoredQueue();
     const currentId = currentTrackRef.current?.id;
     if (queue.length > 0) {
@@ -1253,11 +1272,15 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       const nextId = queue[nextIdx];
       if (nextId) {
         loadTrackById(nextId, true, undefined, 0);
+        syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: nextId, autoPlay: true, currentTime: 0 } });
+        syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing', isPopout: !embedded } });
         return;
       }
     }
 
-    // 3. If queue is empty, check all media files in database:
+    syncChannel.post({ type: 'NEXT_TRACK' });
+
+    // Fallback to all database files if queue is empty
     try {
       const allFiles = await getAllMediaFiles();
       if (allFiles.length > 1) {
@@ -1266,10 +1289,11 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         const target = allFiles[nextIdx];
         if (target) {
           loadTrackById(target.id, true, undefined, 0);
+          syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: target.id, autoPlay: true, currentTime: 0 } });
         }
       }
     } catch {}
-  }, [loadTrackById]);
+  }, [loadTrackById, embedded]);
 
   useEffect(() => {
     handlePlayPrevRef.current = handlePlayPrev;
@@ -1588,6 +1612,10 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
             setStoredQueue(msg.payload.queue);
             refreshQueueFiles(msg.payload.queue);
           }
+          break;
+
+        case 'AUTOPLAY_CHANGE':
+          setAutoPlayNext(msg.payload.autoPlay);
           break;
 
         case 'LOAD_TRACK':
@@ -2209,6 +2237,19 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         type: 'TRACK_ENDED',
         payload: { trackId: currentTrack.id },
       });
+
+      // Autonomous queue advancement in popout player
+      if (!isLooping && autoPlayNext) {
+        const queue = getStoredQueue();
+        const curIdx = currentTrack ? queue.indexOf(currentTrack.id) : -1;
+        if (queue.length > 0) {
+          const nextIdx = curIdx !== -1 && curIdx + 1 < queue.length ? curIdx + 1 : -1;
+          if (nextIdx !== -1) {
+            const nextTrackId = queue[nextIdx];
+            handlePlayQueueTrack(nextTrackId);
+          }
+        }
+      }
     }
   };
 
@@ -2891,6 +2932,25 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
               </div>
             </div>
 
+            {/* Auto-play Next Sub-bar */}
+            <div className="px-4 py-2 border-b border-neutral-800/60 bg-neutral-900/30 flex items-center justify-between">
+              <span className="text-[11px] text-neutral-400">Play next video in queue automatically</span>
+              <label className="flex items-center gap-1.5 text-xs text-neutral-300 hover:text-white cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoPlayNext}
+                  onChange={(e) => {
+                    const val = e.target.checked;
+                    setAutoPlayNext(val);
+                    setAutoPlaySetting(val);
+                    syncChannel.post({ type: 'AUTOPLAY_CHANGE', payload: { autoPlay: val } });
+                  }}
+                  className="w-3.5 h-3.5 rounded text-amber-500 focus:ring-amber-400 cursor-pointer"
+                />
+                <span className="font-medium text-[11px]">Auto-play next</span>
+              </label>
+            </div>
+
             {/* Queue Item List */}
             <div className="flex-1 overflow-y-auto p-3 space-y-2">
               {queueFiles.length === 0 ? (
@@ -2916,7 +2976,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                       {/* Play Button & Info */}
                       <div className="flex items-center gap-2.5 min-w-0 flex-1 pr-2">
                         <button
-                          onClick={() => loadTrackById(file.id, true)}
+                          onClick={() => handlePlayQueueTrack(file.id)}
                           className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition cursor-pointer ${
                             isPlayingThis
                               ? 'bg-amber-500 text-black shadow'
@@ -2929,7 +2989,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
 
                         <div className="min-w-0 flex-1">
                           <p
-                            onClick={() => loadTrackById(file.id, true)}
+                            onClick={() => handlePlayQueueTrack(file.id)}
                             className="text-xs font-semibold truncate cursor-pointer hover:underline"
                             title={file.name}
                           >
