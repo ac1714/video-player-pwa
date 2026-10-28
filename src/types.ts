@@ -13,6 +13,8 @@ export interface MediaFile {
   blobFallback?: Blob;
   duration?: number;
   createdAt: number;
+  playCount?: number;
+  lastPlayedAt?: number;
 }
 
 export interface Playlist {
@@ -177,6 +179,22 @@ export type SyncMessage =
         muted: boolean;
         loop?: boolean;
         isPopout?: boolean;
+      };
+    }
+  | {
+      type: 'PLAY_COUNT_UPDATED';
+      payload: {
+        trackId: string;
+        playCount: number;
+        lastPlayedAt: number;
+      };
+    }
+  | {
+      type: 'FILE_RENAMED';
+      payload: {
+        trackId: string;
+        newName: string;
+        renamedOnDisk: boolean;
       };
     };
 

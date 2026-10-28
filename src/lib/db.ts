@@ -382,7 +382,12 @@ export async function saveMediaFile(file: MediaFile): Promise<void> {
     duration: file.duration,
     createdAt: file.createdAt || Date.now(),
     handle: file.handle,
+    playCount: file.playCount !== undefined ? file.playCount : getStoredPlayCount(file.id),
+    lastPlayedAt: file.lastPlayedAt,
   });
+  if (file.playCount !== undefined) {
+    setStoredPlayCount(file.id, file.playCount);
+  }
 }
 
 export async function saveMediaFilesBatch(files: MediaFile[]): Promise<{ savedCount: number; errors: number }> {
@@ -410,7 +415,12 @@ export async function saveMediaFilesBatch(files: MediaFile[]): Promise<{ savedCo
           duration: f.duration,
           createdAt: f.createdAt || Date.now(),
           handle: f.handle,
+          playCount: f.playCount !== undefined ? f.playCount : getStoredPlayCount(f.id),
+          lastPlayedAt: f.lastPlayedAt,
         });
+        if (f.playCount !== undefined) {
+          setStoredPlayCount(f.id, f.playCount);
+        }
       }
 
       tx.oncomplete = () => resolve({ savedCount: files.length, errors: 0 });
@@ -477,8 +487,10 @@ export async function getAllMediaFiles(): Promise<MediaFile[]> {
       if (record.blobFallback && !cached?.file) {
         registerMemoryFile(record.id, record.blobFallback, record.handle);
       }
+      const count = record.playCount !== undefined ? record.playCount : getStoredPlayCount(record.id);
       return {
         ...record,
+        playCount: count,
         blobFallback: cached?.file || record.blobFallback,
         handle: record.handle || cached?.handle,
       };
@@ -501,6 +513,7 @@ export async function getAllMediaFiles(): Promise<MediaFile[]> {
         createdAt: Date.now(),
         handle: mem.handle,
         blobFallback: mem.file,
+        playCount: getStoredPlayCount(id),
       });
     }
   }
@@ -574,6 +587,114 @@ export async function deleteMediaFile(id: string): Promise<void> {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
+}
+
+// ---------------- PLAY COUNT CACHE & HELPERS ----------------
+
+export function getStoredPlayCount(fileId: string): number {
+  if (typeof window === 'undefined') return 0;
+  try {
+    const raw = localStorage.getItem(`pwa_video_playcount_${fileId}`);
+    return raw ? parseInt(raw, 10) || 0 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function setStoredPlayCount(fileId: string, count: number): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(`pwa_video_playcount_${fileId}`, String(count));
+  } catch {}
+}
+
+export async function incrementPlayCount(fileId: string): Promise<number> {
+  const currentCount = getStoredPlayCount(fileId);
+  const newCount = currentCount + 1;
+  const now = Date.now();
+  setStoredPlayCount(fileId, newCount);
+
+  try {
+    const record = await getMediaFile(fileId);
+    if (record) {
+      const updated: MediaFile = {
+        ...record,
+        playCount: newCount,
+        lastPlayedAt: now,
+      };
+      await saveMediaFile(updated);
+    }
+  } catch (err) {
+    console.warn('Failed to update playCount in IndexedDB:', err);
+  }
+
+  return newCount;
+}
+
+// ---------------- FILE RENAMING (PWA & DISK) ----------------
+
+export async function renameMediaFile(
+  fileId: string,
+  rawNewName: string
+): Promise<{ success: boolean; renamedOnDisk: boolean; finalName: string; message: string }> {
+  const file = await getMediaFile(fileId);
+  if (!file) return { success: false, renamedOnDisk: false, finalName: rawNewName, message: 'File not found in library.' };
+
+  const trimmed = rawNewName.trim();
+  if (!trimmed) return { success: false, renamedOnDisk: false, finalName: file.name, message: 'Name cannot be empty.' };
+
+  // Ensure extension is preserved if user omitted it
+  const origDot = file.name.lastIndexOf('.');
+  const origExt = origDot !== -1 ? file.name.slice(origDot) : '';
+  const finalName = trimmed.includes('.') ? trimmed : `${trimmed}${origExt}`;
+
+  let renamedOnDisk = false;
+
+  // 1. Attempt to rename physical file on local filesystem via FileSystemFileHandle.move() if supported
+  if (file.handle && typeof (file.handle as any).move === 'function') {
+    try {
+      const handle = file.handle as any;
+      let perm = 'granted';
+      if (typeof handle.queryPermission === 'function') {
+        perm = await handle.queryPermission({ mode: 'readwrite' });
+      }
+      if (perm !== 'granted' && typeof handle.requestPermission === 'function') {
+        try {
+          perm = await handle.requestPermission({ mode: 'readwrite' });
+        } catch (permErr) {
+          console.warn('User dismissed or rejected readwrite permission for rename:', permErr);
+        }
+      }
+      if (perm === 'granted') {
+        await handle.move(finalName);
+        renamedOnDisk = true;
+      }
+    } catch (diskErr) {
+      console.warn('Physical file rename on disk failed or was not permitted:', diskErr);
+    }
+  }
+
+  // 2. Persist new name in IndexedDB
+  const updated: MediaFile = {
+    ...file,
+    name: finalName,
+  };
+  await saveMediaFile(updated);
+
+  // 3. Update memory registry
+  const mem = getMemoryFile(fileId);
+  if (mem) {
+    registerMemoryFile(fileId, mem.file, file.handle);
+  }
+
+  return {
+    success: true,
+    renamedOnDisk,
+    finalName,
+    message: renamedOnDisk
+      ? `Renamed to "${finalName}" on disk and in library.`
+      : `Renamed to "${finalName}" in library.`,
+  };
 }
 
 // Playlists operations

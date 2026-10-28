@@ -38,6 +38,7 @@ import {
   Clapperboard,
   Cast,
   Link,
+  FolderPlus,
 } from 'lucide-react';
 import { remoteClient, setDeviceRole, type ClientSnapshot } from '../lib/remote/remoteClient';
 import { decodePairingFragment, type RemoteCommand, type RemoteTrack } from '../lib/remote/protocol';
@@ -118,6 +119,7 @@ export const RemoteView: React.FC = () => {
   const [localVolume, setLocalVolume] = useState<number | null>(null);
   const [search, setSearch] = useState('');
   const [expandedPlaylist, setExpandedPlaylist] = useState<string | null>(null);
+  const [playlistPickerTrack, setPlaylistPickerTrack] = useState<RemoteTrack | null>(null);
   const toastTimer = useRef<number | null>(null);
   const volumeSendTimer = useRef<number | null>(null);
 
@@ -272,15 +274,34 @@ export const RemoteView: React.FC = () => {
                 )}
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-[11px] uppercase tracking-[0.14em] text-amber-400/90 font-semibold flex items-center gap-1.5">
-                  <Cast className="h-3 w-3" /> {pb?.state === 'buffering' ? 'Buffering' : isPlaying ? 'Now playing' : pb?.trackId ? 'Paused' : 'Idle'}
+                <p className="text-[11px] uppercase tracking-[0.14em] text-amber-400/90 font-semibold flex items-center gap-1.5 flex-wrap">
+                  <Cast className="h-3 w-3 shrink-0" /> {pb?.state === 'buffering' ? 'Buffering' : isPlaying ? 'Now playing' : pb?.trackId ? 'Paused' : 'Idle'}
+                  {currentTrack?.playCount !== undefined && currentTrack.playCount > 0 && (
+                    <span className="text-amber-300/80 normal-case font-normal">
+                      · {currentTrack.playCount} {currentTrack.playCount === 1 ? 'play' : 'plays'}
+                    </span>
+                  )}
                 </p>
                 <h2 className="mt-1 text-lg font-bold leading-snug line-clamp-2 font-display">
                   {currentTrack ? prettyName(currentTrack.name) : 'Nothing playing'}
                 </h2>
-                <p className="text-xs text-neutral-400 truncate mt-0.5">
-                  {currentPlaylist ? currentPlaylist.name : currentTrack?.folder || (currentTrack ? 'Library' : 'Pick something below')}
-                </p>
+                <div className="flex items-center justify-between gap-2 mt-1">
+                  <p className="text-xs text-neutral-400 truncate">
+                    {currentPlaylist ? currentPlaylist.name : currentTrack?.folder || (currentTrack ? 'Library' : 'Pick something below')}
+                  </p>
+                  {currentTrack && (
+                    <button
+                      id="remote-add-nowplaying-playlist-btn"
+                      onClick={() => setPlaylistPickerTrack(currentTrack)}
+                      className="shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-full bg-white/10 hover:bg-white/15 active:scale-95 text-[11px] font-semibold text-amber-300 transition"
+                      title="Add active video to playlist"
+                      aria-label="Add active video to playlist"
+                    >
+                      <FolderPlus className="h-3.5 w-3.5" />
+                      <span>+ Playlist</span>
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -527,6 +548,9 @@ export const RemoteView: React.FC = () => {
                       onPlay={() => send({ kind: 'playTrack', trackId: t.id })}
                       actions={
                         <>
+                          <IconAction label="Add to playlist" onClick={() => setPlaylistPickerTrack(t)}>
+                            <FolderPlus className="h-4 w-4" />
+                          </IconAction>
                           <IconAction label="Play next" onClick={() => send({ kind: 'queueAdd', trackId: t.id, playNext: true }, 'Playing next')}>
                             <ListStart className="h-4 w-4" />
                           </IconAction>
@@ -548,6 +572,78 @@ export const RemoteView: React.FC = () => {
           </section>
         </div>
       </div>
+
+      {/* Add to Playlist Modal */}
+      {playlistPickerTrack && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-sm rounded-3xl bg-neutral-900 border border-white/10 p-5 shadow-2xl flex flex-col max-h-[80vh]">
+            <div className="flex items-start justify-between gap-3 pb-3 border-b border-white/10">
+              <div className="min-w-0">
+                <h3 className="text-base font-bold text-white font-display">Add to Playlist</h3>
+                <p className="text-xs text-neutral-400 truncate mt-0.5">{prettyName(playlistPickerTrack.name)}</p>
+              </div>
+              <button
+                onClick={() => setPlaylistPickerTrack(null)}
+                className="p-1 rounded-full text-neutral-400 hover:text-white hover:bg-white/10 active:scale-95 transition"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mt-3 flex-1 overflow-y-auto space-y-1.5 py-1">
+              {(!snap.library?.playlists || snap.library.playlists.length === 0) ? (
+                <p className="text-center text-xs text-neutral-500 py-6">
+                  No playlists found. Create playlists on your computer first!
+                </p>
+              ) : (
+                snap.library.playlists.map((pl) => {
+                  const alreadyIn = pl.fileIds.includes(playlistPickerTrack.id);
+                  return (
+                    <button
+                      key={pl.id}
+                      onClick={() => {
+                        send(
+                          { kind: 'addTrackToPlaylist', trackId: playlistPickerTrack.id, playlistId: pl.id },
+                          `Added to “${pl.name}”`
+                        );
+                        setPlaylistPickerTrack(null);
+                      }}
+                      className="w-full flex items-center justify-between p-3 rounded-2xl bg-white/[0.04] hover:bg-white/[0.08] active:scale-[0.99] border border-white/5 transition text-left"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="h-9 w-9 rounded-xl bg-violet-600/30 text-violet-300 flex items-center justify-center shrink-0">
+                          <ListMusic className="h-4.5 w-4.5" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-white truncate">{pl.name}</p>
+                          <p className="text-[11px] text-neutral-400">
+                            {pl.fileIds.length} video{pl.fileIds.length === 1 ? '' : 's'}
+                          </p>
+                        </div>
+                      </div>
+                      {alreadyIn ? (
+                        <span className="text-[11px] text-amber-400/90 font-medium px-2 py-0.5 rounded-full bg-amber-400/10">In playlist</span>
+                      ) : (
+                        <FolderPlus className="h-4 w-4 text-neutral-400" />
+                      )}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-white/10">
+              <button
+                onClick={() => setPlaylistPickerTrack(null)}
+                className="w-full py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm font-semibold text-white transition active:scale-95"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toast */}
       <div
@@ -628,9 +724,14 @@ const TrackRow: React.FC<{
     </div>
     <div className="min-w-0 flex-1">
       <p className={`text-sm truncate ${active ? 'text-amber-300 font-semibold' : 'text-white/90'}`}>{prettyName(track.name)}</p>
-      <p className="text-[11px] text-neutral-500 truncate">
-        {track.duration ? formatTime(track.duration) : '—'}
-        {showFolder && track.folder ? ` · ${track.folder}` : ''}
+      <p className="text-[11px] text-neutral-500 truncate flex items-center gap-1">
+        <span>{track.duration ? formatTime(track.duration) : '—'}</span>
+        {track.playCount !== undefined && track.playCount > 0 && (
+          <span className="text-amber-400/80 font-medium">
+            · {track.playCount} {track.playCount === 1 ? 'play' : 'plays'}
+          </span>
+        )}
+        {showFolder && track.folder ? <span>· {track.folder}</span> : null}
       </p>
     </div>
     {actions && <div className="flex items-center shrink-0">{actions}</div>}

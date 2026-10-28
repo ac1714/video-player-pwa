@@ -17,6 +17,7 @@ export interface RemoteTrack {
   name: string;
   duration?: number;
   folder?: string;
+  playCount?: number;
 }
 
 export interface RemotePlaylist {
@@ -62,7 +63,8 @@ export type RemoteCommand =
   | { kind: 'queueAdd'; trackId: string; playNext?: boolean }
   | { kind: 'queueRemove'; index: number }
   | { kind: 'queueMove'; index: number; direction: 'up' | 'down' }
-  | { kind: 'queueClear' };
+  | { kind: 'queueClear' }
+  | { kind: 'addTrackToPlaylist'; trackId: string; playlistId: string };
 
 /** Phone -> Chromebook */
 export type RemoteToHostMessage =

@@ -38,7 +38,7 @@ import {
   X,
 } from 'lucide-react';
 import { MediaFile, SyncMessage } from '../types';
-import { getMediaFile, getMemoryFile, registerMemoryFile, getAllDirectoryHandles, getAllMediaFiles, retrieveBinaryBlob, saveMediaFile } from '../lib/db';
+import { getMediaFile, getMemoryFile, registerMemoryFile, getAllDirectoryHandles, getAllMediaFiles, retrieveBinaryBlob, saveMediaFile, incrementPlayCount } from '../lib/db';
 import { relinkFolderHandles, resolveFileFromDirectory, generateUUID, isInsideIframe, pickFolderToRelink, pickFilesToRelink, relinkFilesFromList } from '../lib/fileIngestion';
 import { syncChannel, getPopoutUrl } from '../lib/syncChannel';
 import {
@@ -86,6 +86,19 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
   const handlePlayPrevRef = useRef<() => void>(() => {});
   const handlePlayNextRef = useRef<() => void>(() => {});
   const loadTrackByIdRef = useRef<(trackId: string, autoPlay?: boolean, directBlob?: Blob, startTime?: number, optVolume?: number, optMuted?: boolean) => void>(() => {});
+
+  // Play session tracking to enforce minimum duration threshold before counting a play
+  const playSessionRef = useRef<{
+    trackId: string | null;
+    accumulatedSeconds: number;
+    lastMediaTime: number;
+    counted: boolean;
+  }>({
+    trackId: null,
+    accumulatedSeconds: 0,
+    lastMediaTime: 0,
+    counted: false,
+  });
 
   useEffect(() => {
     setInternalExternalActive(isExternalActive);
@@ -1979,6 +1992,39 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       }
     }
 
+    // Play Qualification: Require 15 seconds of actual playback (or 50% for clips under 30s)
+    const activeTrackId = currentTrackRef.current?.id;
+    if (activeTrackId) {
+      if (playSessionRef.current.trackId !== activeTrackId) {
+        playSessionRef.current = {
+          trackId: activeTrackId,
+          accumulatedSeconds: 0,
+          lastMediaTime: cur,
+          counted: false,
+        };
+      } else if (!videoRef.current.paused && !videoRef.current.seeking) {
+        const delta = cur - playSessionRef.current.lastMediaTime;
+        // Only count forward progress between 0 and 1.5 seconds to prevent scrubbing from faking watch time
+        if (delta > 0 && delta < 1.5) {
+          playSessionRef.current.accumulatedSeconds += delta;
+        }
+        playSessionRef.current.lastMediaTime = cur;
+
+        const threshold = dur > 0 ? Math.min(15, dur * 0.5) : 15;
+        if (!playSessionRef.current.counted && playSessionRef.current.accumulatedSeconds >= threshold) {
+          playSessionRef.current.counted = true;
+          incrementPlayCount(activeTrackId).then((newCount) => {
+            syncChannel.post({
+              type: 'PLAY_COUNT_UPDATED',
+              payload: { trackId: activeTrackId, playCount: newCount, lastPlayedAt: Date.now() },
+            });
+          }).catch(() => {});
+        }
+      } else {
+        playSessionRef.current.lastMediaTime = cur;
+      }
+    }
+
     const now = performance.now();
     if (now - lastTimeSentRef.current > 250) {
       lastTimeSentRef.current = now;
@@ -2142,6 +2188,17 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     });
 
     if (currentTrack) {
+      // If short track ended before threshold, qualify it now upon completed play
+      if (!playSessionRef.current.counted && playSessionRef.current.trackId === currentTrack.id) {
+        playSessionRef.current.counted = true;
+        incrementPlayCount(currentTrack.id).then((newCount) => {
+          syncChannel.post({
+            type: 'PLAY_COUNT_UPDATED',
+            payload: { trackId: currentTrack.id, playCount: newCount, lastPlayedAt: Date.now() },
+          });
+        }).catch(() => {});
+      }
+
       syncChannel.post({
         type: 'TRACK_ENDED',
         payload: { trackId: currentTrack.id },

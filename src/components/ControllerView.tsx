@@ -56,6 +56,9 @@ import {
   Clock,
   Shuffle,
   Smartphone,
+  Eye,
+  ArrowUpDown,
+  Tag,
 } from 'lucide-react';
 import { MediaFile, Playlist, SyncMessage } from '../types';
 import {
@@ -80,6 +83,7 @@ import {
   saveDirectoryHandle,
   retrieveBinaryBlob,
   saveMediaFile,
+  getStoredPlayCount,
 } from '../lib/db';
 import { syncChannel, getPopoutUrl } from '../lib/syncChannel';
 import {
@@ -120,6 +124,7 @@ import { ThemeToggle } from './ThemeToggle';
 import { APP_VERSION } from '../version';
 import { useRemoteHostBridge } from '../hooks/useRemoteHostBridge';
 import { RemotePairingModal, RemoteStatusDot } from './RemotePairingModal';
+import { RenameModal } from './RenameModal';
 import type { RemoteCommand } from '../lib/remote/protocol';
 
 interface ControllerViewProps {
@@ -177,6 +182,15 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   // Quick Add-to-Playlist modals
   const [fileToAddToPlaylist, setFileToAddToPlaylist] = useState<MediaFile | null>(null);
   const [showAddTracksToPlaylist, setShowAddTracksToPlaylist] = useState<Playlist | null>(null);
+  const [fileToRename, setFileToRename] = useState<MediaFile | null>(null);
+  const [sortBy, setSortBy] = useState<'name' | 'playCount' | 'recent' | 'duration'>('name');
+  const [promptRenameOnImport, setPromptRenameOnImport] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('pwa_video_prompt_rename_on_import') === 'true';
+    } catch {
+      return false;
+    }
+  });
   const [overlaySearchQuery, setOverlaySearchQuery] = useState<string>('');
   const [overlayTab, setOverlayTab] = useState<'videos' | 'folders'>('videos');
   const [expandedFolderPaths, setExpandedFolderPaths] = useState<Set<string>>(new Set());
@@ -755,6 +769,28 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
         case 'PREV_TRACK': {
           handlePlayPrevRef.current();
+          break;
+        }
+
+        case 'PLAY_COUNT_UPDATED': {
+          setMediaFiles((prev) =>
+            prev.map((f) =>
+              f.id === msg.payload.trackId
+                ? { ...f, playCount: msg.payload.playCount, lastPlayedAt: msg.payload.lastPlayedAt }
+                : f
+            )
+          );
+          break;
+        }
+
+        case 'FILE_RENAMED': {
+          setMediaFiles((prev) =>
+            prev.map((f) =>
+              f.id === msg.payload.trackId
+                ? { ...f, name: msg.payload.newName }
+                : f
+            )
+          );
           break;
         }
 
@@ -1398,6 +1434,9 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
       case 'queueClear':
         handleClearQueue();
         break;
+      case 'addTrackToPlaylist':
+        handleAddTrackToPlaylistDirect(cmd.trackId, cmd.playlistId);
+        break;
     }
   };
 
@@ -1462,6 +1501,9 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
           await loadDatabase();
           setNeedsDirectoryReauth(false);
           setStatusNotice(`Imported ${result.count} video file${result.count === 1 ? '' : 's'}.`);
+          if (promptRenameOnImport && result.files && result.files.length > 0) {
+            setFileToRename(result.files[0]);
+          }
           return;
         } else {
           setStatusNotice('No video files found in selected folder.');
@@ -1505,6 +1547,9 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         setStatusNotice(
           `Imported ${result.count} video file${result.count === 1 ? '' : 's'}${plName ? ` and added to "${plName}"` : ''}.`
         );
+        if (promptRenameOnImport && result.files && result.files.length > 0) {
+          setFileToRename(result.files[0]);
+        }
       }
     } catch (err) {
       console.error('Folder input error:', err);
@@ -1555,6 +1600,9 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         if (result.count > 0) {
           await loadDatabase();
           setStatusNotice(`Imported ${result.count} video file${result.count === 1 ? '' : 's'}.`);
+          if (promptRenameOnImport && result.files && result.files.length > 0) {
+            setFileToRename(result.files[0]);
+          }
           return;
         }
       } catch (err: any) {
@@ -1580,6 +1628,9 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         setStatusNotice('No video files found.');
       } else {
         setStatusNotice(`Imported ${result.count} video file${result.count === 1 ? '' : 's'}.`);
+        if (promptRenameOnImport && result.files && result.files.length > 0) {
+          setFileToRename(result.files[0]);
+        }
       }
     } catch (err) {
       console.error('File input error:', err);
@@ -1622,6 +1673,9 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         setStatusNotice('No video files found in dropped items.');
       } else {
         setStatusNotice(`Imported ${result.count} video file${result.count === 1 ? '' : 's'}.`);
+        if (promptRenameOnImport && result.files && result.files.length > 0) {
+          setFileToRename(result.files[0]);
+        }
       }
     } catch (err) {
       console.error('Drop error:', err);
@@ -1744,15 +1798,33 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   };
 
   const filteredFiles = useMemo(() => {
-    if (!searchQuery.trim()) return mediaFiles;
-    const q = searchQuery.toLowerCase();
-    return mediaFiles.filter(
-      (f) =>
-        f.name.toLowerCase().includes(q) ||
-        f.mimeType.toLowerCase().includes(q) ||
-        (f.relativePath && f.relativePath.toLowerCase().includes(q))
-    );
-  }, [mediaFiles, searchQuery]);
+    let list = mediaFiles;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = mediaFiles.filter(
+        (f) =>
+          f.name.toLowerCase().includes(q) ||
+          f.mimeType.toLowerCase().includes(q) ||
+          (f.relativePath && f.relativePath.toLowerCase().includes(q))
+      );
+    }
+    return [...list].sort((a, b) => {
+      if (sortBy === 'playCount') {
+        const diff = (b.playCount || 0) - (a.playCount || 0);
+        if (diff !== 0) return diff;
+        return a.name.localeCompare(b.name);
+      }
+      if (sortBy === 'recent') {
+        const diff = (b.lastPlayedAt || 0) - (a.lastPlayedAt || 0);
+        if (diff !== 0) return diff;
+        return a.name.localeCompare(b.name);
+      }
+      if (sortBy === 'duration') {
+        return (b.duration || 0) - (a.duration || 0);
+      }
+      return a.name.localeCompare(b.name);
+    });
+  }, [mediaFiles, searchQuery, sortBy]);
 
   // Derived folder groups from mediaFiles relative paths
   const folderGroups = useMemo(() => {
@@ -2080,6 +2152,25 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
               <span>Import Files</span>
             </button>
 
+            {/* Prompt to rename when importing toggle */}
+            <label
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 text-xs font-medium text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white cursor-pointer select-none transition"
+              title="When checked, a rename dialog will automatically prompt whenever you import videos"
+            >
+              <input
+                type="checkbox"
+                checked={promptRenameOnImport}
+                onChange={(e) => {
+                  setPromptRenameOnImport(e.target.checked);
+                  try {
+                    localStorage.setItem('pwa_video_prompt_rename_on_import', String(e.target.checked));
+                  } catch {}
+                }}
+                className="w-3.5 h-3.5 rounded text-amber-500 focus:ring-amber-400 cursor-pointer"
+              />
+              <span className="hidden sm:inline">Rename on import</span>
+            </label>
+
 
 
             {/* Reauthorize Access Button (when permission needs elevation) */}
@@ -2259,15 +2350,33 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                 </span>
               </div>
 
-              <div className="relative min-w-[220px]">
-                <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-neutral-400" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search catalog by name or format..."
-                  className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-xs text-neutral-900 dark:text-neutral-100 outline-none focus:ring-1 focus:ring-neutral-400"
-                />
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Sort selector */}
+                <div className="flex items-center gap-1 text-xs">
+                  <span className="text-neutral-400 text-[11px] font-medium hidden sm:inline">Sort:</span>
+                  <select
+                    id="catalog-sort-select"
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value as any)}
+                    className="px-2.5 py-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-xs font-semibold text-neutral-800 dark:text-neutral-200 outline-none cursor-pointer"
+                  >
+                    <option value="name">Name (A-Z)</option>
+                    <option value="playCount">Most Played</option>
+                    <option value="recent">Recently Played</option>
+                    <option value="duration">Duration</option>
+                  </select>
+                </div>
+
+                <div className="relative min-w-[200px]">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-neutral-400" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search catalog..."
+                    className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-xs text-neutral-900 dark:text-neutral-100 outline-none focus:ring-1 focus:ring-neutral-400"
+                  />
+                </div>
               </div>
             </div>
 
@@ -2361,6 +2470,15 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                                 </span>
                               </>
                             )}
+
+                            {/* Play count badge */}
+                            <span
+                              className="inline-flex items-center gap-1 text-[10px] font-sans font-medium px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-neutral-600 dark:text-neutral-400 tabular-nums"
+                              title={`${file.playCount || 0} qualifying plays (minimum watch duration met)`}
+                            >
+                              <Play className="w-2.5 h-2.5 fill-current opacity-70" />
+                              <span>{file.playCount || 0} {file.playCount === 1 ? 'play' : 'plays'}</span>
+                            </span>
                           </div>
                         </div>
                       </div>
@@ -2395,6 +2513,15 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                           title="Add to Playlist..."
                         >
                           <FolderHeart className="w-3.5 h-3.5" />
+                        </button>
+
+                        {/* Rename Video */}
+                        <button
+                          onClick={() => setFileToRename(file)}
+                          className="p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white transition cursor-pointer"
+                          title="Rename video file..."
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
                         </button>
 
                         {/* Open in New Tab */}
@@ -2916,18 +3043,47 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
       >
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-3">
           {/* Active Track */}
-          <div className="flex items-center gap-3 min-w-0 w-full md:w-1/4">
+          <div className="flex items-center gap-3 min-w-0 w-full md:w-1/3">
             <div className="w-9 h-9 rounded-lg bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 flex items-center justify-center shrink-0">
               <Film className="w-4 h-4 text-neutral-500" />
             </div>
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <p className="text-xs sm:text-sm font-semibold tracking-tight text-neutral-900 dark:text-neutral-100 truncate" title={activeTrack ? activeTrack.name : 'No Track'}>
                 {activeTrack ? activeTrack.name : 'No Track'}
               </p>
-              <span className="text-[10px] font-sans font-medium tracking-wider uppercase text-neutral-500 dark:text-neutral-400">
-                {playerState}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-sans font-medium tracking-wider uppercase text-neutral-500 dark:text-neutral-400">
+                  {playerState}
+                </span>
+                {activeTrack && (
+                  <span className="text-[10px] font-sans text-neutral-500 dark:text-neutral-400 font-medium">
+                    · {(activeTrack.playCount || 0)} {(activeTrack.playCount === 1 ? 'play' : 'plays')}
+                  </span>
+                )}
+              </div>
             </div>
+
+            {/* Quick Actions for Active Playing Video */}
+            {activeTrack && (
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  id="active-track-add-to-playlist-btn"
+                  onClick={() => setFileToAddToPlaylist(activeTrack)}
+                  className="p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 hover:bg-amber-500/10 hover:border-amber-500/40 text-neutral-600 dark:text-neutral-400 hover:text-amber-600 dark:hover:text-amber-400 transition cursor-pointer"
+                  title="Add active playing video to playlist(s)..."
+                >
+                  <FolderHeart className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  id="active-track-rename-btn"
+                  onClick={() => setFileToRename(activeTrack)}
+                  className="p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white transition cursor-pointer"
+                  title="Rename active video..."
+                >
+                  <Edit2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Transport Controls & Continuous Progress Bar */}
@@ -3798,6 +3954,17 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
       {showRemoteModal && (
         <RemotePairingModal status={remoteHostStatus} onClose={() => setShowRemoteModal(false)} />
+      )}
+
+      {fileToRename && (
+        <RenameModal
+          file={fileToRename}
+          onClose={() => setFileToRename(null)}
+          onSuccess={(res) => {
+            setStatusNotice(res.message);
+            loadDatabase();
+          }}
+        />
       )}
 
       <OfflineIndicator />

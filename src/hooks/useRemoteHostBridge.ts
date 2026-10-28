@@ -62,6 +62,7 @@ export function useRemoteHostBridge(input: RemoteHostBridgeInput): HostStatusSna
         name: f.name,
         duration: f.duration,
         folder: folderOf(f.relativePath),
+        playCount: f.playCount,
       })),
       playlists: input.playlists.map((p) => ({ id: p.id, name: p.name, fileIds: p.fileIds })),
     }),
