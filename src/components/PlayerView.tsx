@@ -38,7 +38,7 @@ import {
   X,
 } from 'lucide-react';
 import { MediaFile, SyncMessage } from '../types';
-import { getMediaFile, getMemoryFile, registerMemoryFile, getAllDirectoryHandles, getAllMediaFiles, retrieveBinaryBlob } from '../lib/db';
+import { getMediaFile, getMemoryFile, registerMemoryFile, getAllDirectoryHandles, getAllMediaFiles, retrieveBinaryBlob, saveMediaFile } from '../lib/db';
 import { relinkFolderHandles, resolveFileFromDirectory, generateUUID, isInsideIframe, pickFolderToRelink, pickFilesToRelink, relinkFilesFromList } from '../lib/fileIngestion';
 import { syncChannel, getPopoutUrl } from '../lib/syncChannel';
 import {
@@ -500,7 +500,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
               playPromise
                 .then(() => {
                   setIsPlaying(true);
-                  if (!embedded || !isExternalActiveRef.current) {
+                  if (videoRef.current && (!embedded || !isExternalActiveRef.current)) {
                     videoRef.current.volume = targetVolume;
                     videoRef.current.muted = targetMuted;
                     setIsMuted(targetMuted);
@@ -2253,7 +2253,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
                       popout.close();
                     } catch {}
                   }
-                  syncChannel.setPopoutWindow(null);
+                  syncChannel.registerPopoutWindow(null);
 
                   // Update global active playback state
                   if (targetId) {

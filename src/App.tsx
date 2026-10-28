@@ -14,13 +14,25 @@ import { ThemeProvider } from './lib/theme';
 import { syncChannel, getPopoutUrl } from './lib/syncChannel';
 import { getActivePlaybackState, saveActivePlaybackState } from './lib/localStorageState';
 import { getMemoryFile } from './lib/db';
+import { RemoteView } from './components/RemoteView';
+import { getDeviceRole } from './lib/remote/remoteClient';
 
-function getInitialViewMode(): 'controller' | 'player' | 'split' {
+function getInitialViewMode(): 'controller' | 'player' | 'split' | 'remote' {
   if (typeof window === 'undefined') return 'split';
   const path = window.location.pathname.toLowerCase();
   const params = new URLSearchParams(window.location.search);
   const viewParam = params.get('view')?.toLowerCase();
   const modeParam = params.get('mode')?.toLowerCase();
+  const hash = typeof window !== 'undefined' ? window.location.hash : '';
+
+  if (
+    viewParam === 'remote' ||
+    path.includes('remote.html') ||
+    hash.includes('pair=') ||
+    (getDeviceRole() === 'remote' && !viewParam && !path.includes('player') && !path.includes('controller'))
+  ) {
+    return 'remote';
+  }
 
   if (
     path.includes('player.html') ||
@@ -38,7 +50,7 @@ function getInitialViewMode(): 'controller' | 'player' | 'split' {
 }
 
 export default function App() {
-  const [viewMode, setViewMode] = useState<'controller' | 'player' | 'split'>(getInitialViewMode);
+  const [viewMode, setViewMode] = useState<'controller' | 'player' | 'split' | 'remote'>(getInitialViewMode);
   const [activeTrackId, setActiveTrackId] = useState<string>(() => getActivePlaybackState().trackId || '');
   const [copiedUrl, setCopiedUrl] = useState<boolean>(false);
   const [isExternalActive, setIsExternalActive] = useState<boolean>(false);
@@ -203,7 +215,9 @@ export default function App() {
 
   return (
     <ThemeProvider>
-      {viewMode === 'player' ? (
+      {viewMode === 'remote' ? (
+        <RemoteView />
+      ) : viewMode === 'player' ? (
         <PlayerView />
       ) : (
         <div className="flex flex-col min-h-screen bg-neutral-100 dark:bg-black text-neutral-900 dark:text-neutral-100 transition-colors">

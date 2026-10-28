@@ -44,8 +44,10 @@ import {
   RotateCcw,
   Lock,
   Monitor,
+  Folder,
   FolderOpen,
   FolderHeart,
+  MinusSquare,
   ListOrdered,
   GripVertical,
   Plus,
@@ -53,6 +55,7 @@ import {
   PlusCircle,
   Clock,
   Shuffle,
+  Smartphone,
 } from 'lucide-react';
 import { MediaFile, Playlist, SyncMessage } from '../types';
 import {
@@ -66,6 +69,8 @@ import {
   deleteMediaFile,
   addFileToPlaylist,
   removeFileFromPlaylist,
+  addFilesToPlaylist,
+  removeFilesFromPlaylist,
   getPlaylistsForFile,
   clearVideoCache,
   fullSystemReset,
@@ -113,6 +118,9 @@ import { PWAInstallButton } from './PWAInstallButton';
 import { OfflineIndicator } from './OfflineIndicator';
 import { ThemeToggle } from './ThemeToggle';
 import { APP_VERSION } from '../version';
+import { useRemoteHostBridge } from '../hooks/useRemoteHostBridge';
+import { RemotePairingModal, RemoteStatusDot } from './RemotePairingModal';
+import type { RemoteCommand } from '../lib/remote/protocol';
 
 interface ControllerViewProps {
   onOpenPlayerInNewTab?: (trackId?: string, currentTime?: number) => void;
@@ -169,6 +177,10 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   // Quick Add-to-Playlist modals
   const [fileToAddToPlaylist, setFileToAddToPlaylist] = useState<MediaFile | null>(null);
   const [showAddTracksToPlaylist, setShowAddTracksToPlaylist] = useState<Playlist | null>(null);
+  const [overlaySearchQuery, setOverlaySearchQuery] = useState<string>('');
+  const [overlayTab, setOverlayTab] = useState<'videos' | 'folders'>('videos');
+  const [expandedFolderPaths, setExpandedFolderPaths] = useState<Set<string>>(new Set());
+  const folderTargetPlaylistIdRef = useRef<string | null>(null);
 
   // Refs for stable inter-tab sync callbacks
   const activeTrackIdRef = useRef<string | null>(activeTrackId);
@@ -262,6 +274,7 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   const [storageStats, setStorageStats] = useState<{ usedMB: string; quotaMB: string } | null>(null);
   const [showPopoutMenu, setShowPopoutMenu] = useState<boolean>(false);
   const [popoutBlockedUrl, setPopoutBlockedUrl] = useState<string | null>(null);
+  const [showRemoteModal, setShowRemoteModal] = useState<boolean>(false);
 
   useEffect(() => {
     if (!showPopoutMenu) return;
@@ -1314,6 +1327,96 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
     setStatusNotice(`Added ${pl.fileIds.length} tracks from "${pl.name}" to queue`);
   };
 
+  // Phone Remote: route commands from a paired phone into the same handlers the on-screen controls use
+  const handleRemoteCommand = (cmd: RemoteCommand) => {
+    switch (cmd.kind) {
+      case 'play':
+        dispatchPlay();
+        break;
+      case 'pause':
+        dispatchPause();
+        break;
+      case 'togglePlay':
+        if (playerStateRef.current === 'playing') dispatchPause();
+        else dispatchPlay();
+        break;
+      case 'seek': {
+        const dur = durationRef.current || 0;
+        const t = Math.max(0, dur > 0 ? Math.min(dur, cmd.time) : cmd.time);
+        if (Number.isFinite(t)) dispatchSeek(t);
+        break;
+      }
+      case 'skip':
+        if (Number.isFinite(cmd.delta)) handleSkip(cmd.delta);
+        break;
+      case 'next':
+        handlePlayNextRef.current();
+        break;
+      case 'prev':
+        handlePlayPrevRef.current();
+        break;
+      case 'volume':
+        dispatchVolume(Math.max(0, Math.min(1, Number(cmd.volume) || 0)), !!cmd.muted);
+        break;
+      case 'loop':
+        handleToggleLoop(!!cmd.loop);
+        break;
+      case 'playTrack': {
+        if (!mediaFilesRef.current.some((f) => f.id === cmd.trackId)) break;
+        if (queueRef.current.includes(cmd.trackId)) {
+          dispatchLoadTrack(cmd.trackId, true);
+        } else {
+          handleAddToQueue(cmd.trackId, true, true);
+        }
+        break;
+      }
+      case 'playPlaylist': {
+        const pl = playlistsRef.current.find((p) => p.id === cmd.playlistId);
+        if (!pl) break;
+        if (cmd.startTrackId && pl.fileIds.includes(cmd.startTrackId)) {
+          setActivePlaylistIdState(pl.id);
+          setActivePlaylistId(pl.id);
+          setQueue(pl.fileIds);
+          syncChannel.post({ type: 'QUEUE_UPDATED', payload: { queue: pl.fileIds } });
+          dispatchLoadTrack(cmd.startTrackId, true);
+        } else {
+          handlePlayPlaylist(pl);
+        }
+        break;
+      }
+      case 'queueAdd':
+        if (mediaFilesRef.current.some((f) => f.id === cmd.trackId)) {
+          handleAddToQueue(cmd.trackId, false, !!cmd.playNext);
+        }
+        break;
+      case 'queueRemove':
+        if (cmd.index >= 0 && cmd.index < queueRef.current.length) handleRemoveFromQueue(cmd.index);
+        break;
+      case 'queueMove':
+        handleMoveQueueItem(cmd.index, cmd.direction);
+        break;
+      case 'queueClear':
+        handleClearQueue();
+        break;
+    }
+  };
+
+  const remoteHostStatus = useRemoteHostBridge({
+    mediaFiles,
+    playlists,
+    queue,
+    activeTrackId,
+    activePlaylistId,
+    playerState,
+    currentTime,
+    duration,
+    volume,
+    muted: isMuted,
+    loop: isLooping,
+    autoPlayNext,
+    onCommand: handleRemoteCommand,
+  });
+
   const handleAddTrackToPlaylistDirect = async (fileId: string, playlistId: string) => {
     await addFileToPlaylist(fileId, playlistId);
     await loadDatabase();
@@ -1383,20 +1486,65 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   const handleFolderInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
+    const targetPlId = folderTargetPlaylistIdRef.current;
+    folderTargetPlaylistIdRef.current = null;
     try {
       setStatusNotice(`Reading folder (${files.length} items)...`);
       const result = await ingestFileList(files, handleProgressiveFiles);
       await loadDatabase();
+      if (targetPlId && result.files && result.files.length > 0) {
+        const fileIds = result.files.map((f) => f.id);
+        await addFilesToPlaylist(fileIds, targetPlId);
+        await loadDatabase();
+        syncChannel.post({ type: 'PLAYLIST_MODIFIED', payload: { playlistId: targetPlId } });
+      }
       if (result.count === 0) {
         setStatusNotice('No video files found in folder.');
       } else {
-        setStatusNotice(`Imported ${result.count} video file${result.count === 1 ? '' : 's'}.`);
+        const plName = targetPlId ? playlists.find((p) => p.id === targetPlId)?.name : null;
+        setStatusNotice(
+          `Imported ${result.count} video file${result.count === 1 ? '' : 's'}${plName ? ` and added to "${plName}"` : ''}.`
+        );
       }
     } catch (err) {
       console.error('Folder input error:', err);
       setStatusNotice('Error importing folder.');
     } finally {
       e.target.value = '';
+    }
+  };
+
+  const handleImportFolderDirectlyToPlaylist = async (playlistId: string) => {
+    const pl = playlists.find((p) => p.id === playlistId);
+    if ('showDirectoryPicker' in window && !isInsideIframe()) {
+      try {
+        setStatusNotice(`Opening folder to add to "${pl?.name || 'playlist'}"...`);
+        const result = await pickFolderAndIngest(handleProgressiveFiles);
+        if (result.count > 0) {
+          const fileIds = result.files.map((f) => f.id);
+          await addFilesToPlaylist(fileIds, playlistId);
+          await loadDatabase();
+          syncChannel.post({ type: 'PLAYLIST_MODIFIED', payload: { playlistId } });
+          setStatusNotice(`Imported & added ${result.count} video file${result.count === 1 ? '' : 's'} to "${pl?.name || 'playlist'}".`);
+          return;
+        } else {
+          setStatusNotice('No video files found in selected folder.');
+          return;
+        }
+      } catch (err: any) {
+        if (err?.name === 'AbortError') {
+          setStatusNotice(null);
+          return;
+        }
+        console.warn('showDirectoryPicker failed, attempting fallback:', err);
+      }
+    }
+
+    // Fallback to webkitdirectory input
+    folderTargetPlaylistIdRef.current = playlistId;
+    if (folderInputRef.current) {
+      folderInputRef.current.value = '';
+      folderInputRef.current.click();
     }
   };
 
@@ -1501,6 +1649,24 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
     syncChannel.post({ type: 'PLAYLIST_MODIFIED', payload: { playlistId } });
   };
 
+  // Toggle all tracks in a folder for a playlist
+  const toggleFolderInPlaylist = async (folder: { folderName: string; files: MediaFile[] }, playlistId: string) => {
+    const pl = playlists.find((p) => p.id === playlistId);
+    if (!pl) return;
+    const folderFileIds = folder.files.map((f) => f.id);
+    const allIncluded = folderFileIds.length > 0 && folderFileIds.every((id) => pl.fileIds.includes(id));
+
+    if (allIncluded) {
+      await removeFilesFromPlaylist(folderFileIds, playlistId);
+      setStatusNotice(`Removed folder "${folder.folderName}" (${folder.files.length} videos) from "${pl.name}".`);
+    } else {
+      await addFilesToPlaylist(folderFileIds, playlistId);
+      setStatusNotice(`Added folder "${folder.folderName}" (${folder.files.length} videos) to "${pl.name}"!`);
+    }
+    await loadDatabase();
+    syncChannel.post({ type: 'PLAYLIST_MODIFIED', payload: { playlistId } });
+  };
+
   // Playlist Management
   const handleCreatePlaylist = async () => {
     if (!newPlaylistName.trim()) return;
@@ -1580,8 +1746,100 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   const filteredFiles = useMemo(() => {
     if (!searchQuery.trim()) return mediaFiles;
     const q = searchQuery.toLowerCase();
-    return mediaFiles.filter((f) => f.name.toLowerCase().includes(q) || f.mimeType.toLowerCase().includes(q));
+    return mediaFiles.filter(
+      (f) =>
+        f.name.toLowerCase().includes(q) ||
+        f.mimeType.toLowerCase().includes(q) ||
+        (f.relativePath && f.relativePath.toLowerCase().includes(q))
+    );
   }, [mediaFiles, searchQuery]);
+
+  // Derived folder groups from mediaFiles relative paths
+  const folderGroups = useMemo(() => {
+    const map = new Map<string, { files: MediaFile[]; totalSize: number; totalDuration: number }>();
+
+    for (const file of mediaFiles) {
+      let folder = '';
+      if (file.relativePath && file.relativePath.includes('/')) {
+        const parts = file.relativePath.split('/');
+        parts.pop();
+        folder = parts.join('/');
+      } else if (file.relativePath && file.relativePath.includes('\\')) {
+        const parts = file.relativePath.split('\\');
+        parts.pop();
+        folder = parts.join('/');
+      }
+
+      const key = folder || 'Library Root (Uncategorized)';
+      const existing = map.get(key) || { files: [], totalSize: 0, totalDuration: 0 };
+      existing.files.push(file);
+      existing.totalSize += file.size || 0;
+      existing.totalDuration += file.duration || 0;
+      map.set(key, existing);
+    }
+
+    return Array.from(map.entries())
+      .map(([folderPath, data]) => ({
+        folderPath,
+        folderName: folderPath.split('/').pop() || folderPath,
+        files: data.files,
+        totalSize: data.totalSize,
+        totalDuration: data.totalDuration,
+      }))
+      .sort((a, b) => a.folderPath.localeCompare(b.folderPath));
+  }, [mediaFiles]);
+
+  const filteredOverlayFiles = useMemo(() => {
+    if (!overlaySearchQuery.trim()) return mediaFiles;
+    const q = overlaySearchQuery.toLowerCase().trim();
+    return mediaFiles.filter((f) => {
+      const matchName = f.name.toLowerCase().includes(q);
+      const matchPath = f.relativePath ? f.relativePath.toLowerCase().includes(q) : false;
+      const matchType = f.mimeType.toLowerCase().includes(q);
+      return matchName || matchPath || matchType;
+    });
+  }, [mediaFiles, overlaySearchQuery]);
+
+  const filteredOverlayFolders = useMemo(() => {
+    if (!overlaySearchQuery.trim()) return folderGroups;
+    const q = overlaySearchQuery.toLowerCase().trim();
+    return folderGroups.filter((fg) => {
+      const matchFolder = fg.folderPath.toLowerCase().includes(q) || fg.folderName.toLowerCase().includes(q);
+      const matchFile = fg.files.some((f) => f.name.toLowerCase().includes(q));
+      return matchFolder || matchFile;
+    });
+  }, [folderGroups, overlaySearchQuery]);
+
+  const toggleFolderExpanded = (path: string) => {
+    setExpandedFolderPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  const handleSelectAllFiltered = async () => {
+    if (!showAddTracksToPlaylist) return;
+    const currentPl = playlists.find((p) => p.id === showAddTracksToPlaylist.id) || showAddTracksToPlaylist;
+    const idsToAdd = filteredOverlayFiles.map((f) => f.id).filter((id) => !currentPl.fileIds.includes(id));
+    if (idsToAdd.length === 0) return;
+    await addFilesToPlaylist(idsToAdd, currentPl.id);
+    await loadDatabase();
+    syncChannel.post({ type: 'PLAYLIST_MODIFIED', payload: { playlistId: currentPl.id } });
+    setStatusNotice(`Added ${idsToAdd.length} video${idsToAdd.length === 1 ? '' : 's'} to "${currentPl.name}".`);
+  };
+
+  const handleDeselectAllFiltered = async () => {
+    if (!showAddTracksToPlaylist) return;
+    const currentPl = playlists.find((p) => p.id === showAddTracksToPlaylist.id) || showAddTracksToPlaylist;
+    const idsToRemove = filteredOverlayFiles.map((f) => f.id).filter((id) => currentPl.fileIds.includes(id));
+    if (idsToRemove.length === 0) return;
+    await removeFilesFromPlaylist(idsToRemove, currentPl.id);
+    await loadDatabase();
+    syncChannel.post({ type: 'PLAYLIST_MODIFIED', payload: { playlistId: currentPl.id } });
+    setStatusNotice(`Removed ${idsToRemove.length} video${idsToRemove.length === 1 ? '' : 's'} from "${currentPl.name}".`);
+  };
 
   const formatTime = (secs: number) => {
     if (!Number.isFinite(secs) || secs < 0) return '00:00';
@@ -1648,6 +1906,22 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         <div className="flex items-center gap-2">
           {/* Theme Toggle (Right side of header) */}
           <ThemeToggle />
+
+          {/* Phone Remote pairing */}
+          <button
+            id="phone-remote-btn"
+            onClick={() => setShowRemoteModal(true)}
+            className="relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-100 dark:bg-neutral-900 hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300 text-xs font-semibold transition cursor-pointer active:scale-95"
+            title={
+              remoteHostStatus.connectedDevices.length > 0
+                ? `Phone remote connected: ${remoteHostStatus.connectedDevices.join(', ')}`
+                : 'Control playback from your phone'
+            }
+          >
+            <Smartphone className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Remote</span>
+            <RemoteStatusDot status={remoteHostStatus} />
+          </button>
 
           {/* Pop Out to New Tab Link */}
           <a
@@ -2388,14 +2662,33 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                           </div>
                         )}
 
-                        {/* Add Videos to this playlist button */}
-                        <button
-                          onClick={() => setShowAddTracksToPlaylist(pl)}
-                          className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-dashed border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-900 text-xs font-semibold text-neutral-700 dark:text-neutral-300 transition cursor-pointer"
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                          <span>Add Videos to Playlist</span>
-                        </button>
+                        {/* Add Videos / Add Folder to this playlist buttons */}
+                        <div className="grid grid-cols-2 gap-2 pt-1">
+                          <button
+                            id={`add-videos-btn-${pl.id}`}
+                            onClick={() => {
+                              setShowAddTracksToPlaylist(pl);
+                              setOverlayTab('videos');
+                              setOverlaySearchQuery('');
+                            }}
+                            className="flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg border border-dashed border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-900 text-xs font-semibold text-neutral-700 dark:text-neutral-300 transition cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Add Videos</span>
+                          </button>
+                          <button
+                            id={`add-folder-btn-${pl.id}`}
+                            onClick={() => {
+                              setShowAddTracksToPlaylist(pl);
+                              setOverlayTab('folders');
+                              setOverlaySearchQuery('');
+                            }}
+                            className="flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg border border-dashed border-amber-300 dark:border-amber-700/60 bg-amber-500/5 hover:bg-amber-500/15 dark:hover:bg-amber-500/25 text-xs font-semibold text-amber-900 dark:text-amber-200 transition cursor-pointer"
+                          >
+                            <FolderPlus className="w-3.5 h-3.5 text-amber-500" />
+                            <span>Add Folder</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -2981,81 +3274,401 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         </div>
       )}
 
-      {/* ADD TRACKS TO PLAYLIST MODAL (from playlist card) */}
-      {showAddTracksToPlaylist && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div
-            id="add-tracks-to-playlist-modal"
-            className="w-full max-w-md rounded-xl bg-white dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 p-5 shadow-2xl text-neutral-900 dark:text-neutral-100 space-y-4 animate-in fade-in duration-150"
-          >
-            <div className="flex items-start justify-between">
-              <div>
-                <h3 className="text-sm font-bold flex items-center gap-1.5 text-neutral-900 dark:text-neutral-100">
-                  <FolderHeart className="w-4 h-4 text-amber-500 shrink-0" />
-                  <span>Add Videos to "{showAddTracksToPlaylist.name}"</span>
-                </h3>
-                <p className="text-xs text-neutral-500 mt-0.5">
-                  Click any video from your library to add or remove it from this playlist
-                </p>
-              </div>
-              <button
-                onClick={() => setShowAddTracksToPlaylist(null)}
-                className="p-1 text-neutral-400 hover:text-neutral-900 dark:hover:text-white transition cursor-pointer"
-                title="Close"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+      {/* ADD TRACKS & FOLDERS TO PLAYLIST MODAL (from playlist card) */}
+      {showAddTracksToPlaylist && (() => {
+        const currentPl =
+          playlists.find((p) => p.id === showAddTracksToPlaylist.id) || showAddTracksToPlaylist;
+        const totalPlDuration = mediaFiles
+          .filter((f) => currentPl.fileIds.includes(f.id))
+          .reduce((sum, f) => sum + (f.duration || 0), 0);
+        const totalPlSize = mediaFiles
+          .filter((f) => currentPl.fileIds.includes(f.id))
+          .reduce((sum, f) => sum + (f.size || 0), 0);
 
-            <div className="space-y-1 max-h-64 overflow-y-auto pr-1">
-              {mediaFiles.length === 0 ? (
-                <div className="py-6 text-center text-xs text-neutral-400">
-                  No videos in your library yet. Import a video or folder first.
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md p-3 sm:p-6 animate-in fade-in duration-150">
+            <div
+              id="add-tracks-to-playlist-modal"
+              className="w-full max-w-4xl h-[90vh] max-h-[820px] rounded-2xl bg-white dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 p-5 sm:p-6 shadow-2xl text-neutral-900 dark:text-neutral-100 flex flex-col gap-4 animate-in zoom-in-95 duration-150 overflow-hidden"
+            >
+              {/* Top Header */}
+              <div className="flex items-start justify-between gap-3 pb-3 border-b border-neutral-200 dark:border-neutral-800 shrink-0">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-base sm:text-lg font-bold flex items-center gap-2 text-neutral-900 dark:text-neutral-100">
+                      <FolderHeart className="w-5 h-5 text-amber-500 shrink-0" />
+                      <span>Add Videos & Folders</span>
+                    </h3>
+                    <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-900 dark:text-amber-300 border border-amber-500/30 truncate max-w-[200px] sm:max-w-[300px]">
+                      {currentPl.name}
+                    </span>
+                  </div>
+                  <p className="text-xs text-neutral-500 mt-1">
+                    Search videos, check off individual files, or batch add entire folders to this playlist with one click.
+                  </p>
                 </div>
-              ) : (
-                mediaFiles.map((file) => {
-                  const currentPl = playlists.find((p) => p.id === showAddTracksToPlaylist.id) || showAddTracksToPlaylist;
-                  const isIncluded = currentPl.fileIds.includes(file.id);
-                  return (
-                    <div
-                      key={`batch-track-${file.id}`}
-                      onClick={() => toggleTrackInPlaylist(file.id, currentPl.id)}
-                      className={`flex items-center justify-between p-2 rounded-lg border cursor-pointer text-xs transition ${
-                        isIncluded
-                          ? 'bg-amber-500/10 dark:bg-amber-500/20 border-amber-500/50 text-amber-900 dark:text-amber-200 font-medium'
-                          : 'border-neutral-200 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-900 text-neutral-700 dark:text-neutral-300'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 min-w-0 pr-2">
-                        {isIncluded ? (
-                          <CheckSquare className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
-                        ) : (
-                          <Square className="w-4 h-4 text-neutral-400 shrink-0" />
-                        )}
-                        <span className="truncate" title={file.name}>
-                          {file.name}
-                        </span>
-                      </div>
-                      <span className="text-[10px] font-sans font-medium tabular-nums text-neutral-400 shrink-0">
-                        {file.duration ? formatTime(file.duration) : `${(file.size / (1024 * 1024)).toFixed(1)} MB`}
-                      </span>
-                    </div>
-                  );
-                })
-              )}
-            </div>
 
-            <div className="pt-2 flex justify-end">
-              <button
-                onClick={() => setShowAddTracksToPlaylist(null)}
-                className="px-4 py-1.5 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-black text-xs font-semibold hover:opacity-90 transition cursor-pointer"
-              >
-                Done
-              </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => {
+                      setShowAddTracksToPlaylist(null);
+                      setOverlaySearchQuery('');
+                    }}
+                    className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-900 dark:hover:text-white hover:bg-neutral-100 dark:hover:bg-neutral-900 transition cursor-pointer"
+                    title="Close overlay"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Controls Toolbar: Search & Tab Switcher & Quick Actions */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 shrink-0">
+                {/* Search Option */}
+                <div className="relative flex-1 min-w-[220px]">
+                  <Search className="w-4 h-4 absolute left-3 top-2.5 text-neutral-400" />
+                  <input
+                    type="text"
+                    value={overlaySearchQuery}
+                    onChange={(e) => setOverlaySearchQuery(e.target.value)}
+                    placeholder="Search videos by title, folder, or format..."
+                    className="w-full pl-9 pr-8 py-2 rounded-xl bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-xs sm:text-sm text-neutral-900 dark:text-neutral-100 outline-none focus:ring-2 focus:ring-amber-500/40 transition placeholder:text-neutral-400"
+                  />
+                  {overlaySearchQuery && (
+                    <button
+                      onClick={() => setOverlaySearchQuery('')}
+                      className="absolute right-2.5 top-2.5 text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 transition"
+                      title="Clear search"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+
+                {/* View Mode Switcher: Videos vs Folders */}
+                <div className="flex items-center gap-1.5 bg-neutral-100 dark:bg-neutral-900 p-1 rounded-xl border border-neutral-200 dark:border-neutral-800 shrink-0 self-start sm:self-auto">
+                  <button
+                    onClick={() => setOverlayTab('videos')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                      overlayTab === 'videos'
+                        ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 shadow-xs'
+                        : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100'
+                    }`}
+                  >
+                    <Film className="w-3.5 h-3.5" />
+                    <span>Videos ({filteredOverlayFiles.length})</span>
+                  </button>
+                  <button
+                    onClick={() => setOverlayTab('folders')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                      overlayTab === 'folders'
+                        ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 shadow-xs'
+                        : 'text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100'
+                    }`}
+                  >
+                    <Folder className="w-3.5 h-3.5" />
+                    <span>Folders ({filteredOverlayFolders.length})</span>
+                  </button>
+                </div>
+
+                {/* Direct Folder Import Button from Disk */}
+                <button
+                  onClick={() => handleImportFolderDirectlyToPlaylist(currentPl.id)}
+                  className="flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-900 dark:text-amber-200 border border-amber-500/30 text-xs font-semibold transition cursor-pointer shrink-0"
+                  title="Import a folder from disk and add all videos to this playlist"
+                >
+                  <FolderPlus className="w-4 h-4 text-amber-500" />
+                  <span>Import Folder to Playlist</span>
+                </button>
+              </div>
+
+              {/* Sub-bar: Bulk selection status & action helpers */}
+              <div className="flex items-center justify-between text-xs text-neutral-500 shrink-0 px-1">
+                <div>
+                  {overlayTab === 'videos' ? (
+                    <span>
+                      Showing {filteredOverlayFiles.length} of {mediaFiles.length} videos
+                      {overlaySearchQuery && ` matching "${overlaySearchQuery}"`}
+                    </span>
+                  ) : (
+                    <span>
+                      Showing {filteredOverlayFolders.length} of {folderGroups.length} folders
+                      {overlaySearchQuery && ` matching "${overlaySearchQuery}"`}
+                    </span>
+                  )}
+                </div>
+
+                {overlayTab === 'videos' && filteredOverlayFiles.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleSelectAllFiltered}
+                      className="text-amber-600 dark:text-amber-400 hover:underline font-semibold cursor-pointer"
+                    >
+                      Select All Filtered
+                    </button>
+                    <span>•</span>
+                    <button
+                      onClick={handleDeselectAllFiltered}
+                      className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 cursor-pointer"
+                    >
+                      Deselect All
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Content Area - Scrollable */}
+              <div className="flex-1 overflow-y-auto min-h-0 pr-1 space-y-2">
+                {/* VIDEOS TAB */}
+                {overlayTab === 'videos' && (
+                  <>
+                    {mediaFiles.length === 0 ? (
+                      <div className="py-16 text-center text-xs text-neutral-400 space-y-3">
+                        <Film className="w-10 h-10 mx-auto text-neutral-300 dark:text-neutral-700" />
+                        <p>No videos in your library yet.</p>
+                        <button
+                          onClick={() => handleImportFolderDirectlyToPlaylist(currentPl.id)}
+                          className="px-4 py-2 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-black font-semibold text-xs cursor-pointer inline-flex items-center gap-2"
+                        >
+                          <FolderPlus className="w-4 h-4" />
+                          <span>Import a folder from your computer</span>
+                        </button>
+                      </div>
+                    ) : filteredOverlayFiles.length === 0 ? (
+                      <div className="py-12 text-center text-xs text-neutral-400">
+                        No videos matching "{overlaySearchQuery}".
+                      </div>
+                    ) : (
+                      filteredOverlayFiles.map((file) => {
+                        const isIncluded = currentPl.fileIds.includes(file.id);
+                        return (
+                          <div
+                            key={`overlay-file-${file.id}`}
+                            onClick={() => toggleTrackInPlaylist(file.id, currentPl.id)}
+                            className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer text-xs transition select-none ${
+                              isIncluded
+                                ? 'bg-amber-500/10 dark:bg-amber-500/20 border-amber-500/50 text-neutral-900 dark:text-neutral-100 font-medium'
+                                : 'border-neutral-200 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-900/60 text-neutral-700 dark:text-neutral-300'
+                            }`}
+                          >
+                            <div className="flex items-center gap-3 min-w-0 pr-2">
+                              {isIncluded ? (
+                                <CheckSquare className="w-4 h-4 text-amber-500 shrink-0" />
+                              ) : (
+                                <Square className="w-4 h-4 text-neutral-400 shrink-0" />
+                              )}
+                              <div className="min-w-0">
+                                <span className="font-semibold truncate block" title={file.name}>
+                                  {file.name}
+                                </span>
+                                {file.relativePath && file.relativePath.includes('/') && (
+                                  <span className="text-[11px] text-neutral-400 truncate flex items-center gap-1 mt-0.5">
+                                    <Folder className="w-3 h-3 inline shrink-0" />
+                                    <span className="truncate">
+                                      {file.relativePath.slice(0, file.relativePath.lastIndexOf('/'))}
+                                    </span>
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2.5 text-[11px] font-sans font-medium tabular-nums text-neutral-400 shrink-0">
+                              {file.duration ? (
+                                <span>{formatTime(file.duration)}</span>
+                              ) : null}
+                              <span>•</span>
+                              <span>{(file.size / (1024 * 1024)).toFixed(1)} MB</span>
+                              <span className="uppercase px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-[10px] text-neutral-500">
+                                {file.mimeType.replace('video/', '')}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </>
+                )}
+
+                {/* FOLDERS TAB */}
+                {overlayTab === 'folders' && (
+                  <>
+                    {folderGroups.length === 0 ? (
+                      <div className="py-16 text-center text-xs text-neutral-400 space-y-3">
+                        <Folder className="w-10 h-10 mx-auto text-neutral-300 dark:text-neutral-700" />
+                        <p>No folders discovered in your library yet.</p>
+                        <button
+                          onClick={() => handleImportFolderDirectlyToPlaylist(currentPl.id)}
+                          className="px-4 py-2 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-black font-semibold text-xs cursor-pointer inline-flex items-center gap-2"
+                        >
+                          <FolderPlus className="w-4 h-4" />
+                          <span>Import a folder from your computer</span>
+                        </button>
+                      </div>
+                    ) : filteredOverlayFolders.length === 0 ? (
+                      <div className="py-12 text-center text-xs text-neutral-400">
+                        No folders matching "{overlaySearchQuery}".
+                      </div>
+                    ) : (
+                      filteredOverlayFolders.map((fg) => {
+                        const includedCount = fg.files.filter((f) => currentPl.fileIds.includes(f.id)).length;
+                        const isAll = includedCount === fg.files.length && fg.files.length > 0;
+                        const isPartial = includedCount > 0 && !isAll;
+                        const isExpanded = expandedFolderPaths.has(fg.folderPath);
+
+                        return (
+                          <div
+                            key={`overlay-folder-${fg.folderPath}`}
+                            className={`rounded-xl border transition overflow-hidden ${
+                              isAll
+                                ? 'bg-amber-500/10 dark:bg-amber-500/20 border-amber-500/50'
+                                : isPartial
+                                ? 'bg-amber-500/5 dark:bg-amber-500/10 border-amber-500/30'
+                                : 'bg-neutral-50/50 dark:bg-neutral-900/30 border-neutral-200 dark:border-neutral-800 hover:border-neutral-300 dark:hover:border-neutral-700'
+                            }`}
+                          >
+                            {/* Folder Card Header */}
+                            <div className="p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                              <div className="flex items-center gap-3 min-w-0 flex-1">
+                                <button
+                                  onClick={() => toggleFolderInPlaylist(fg, currentPl.id)}
+                                  className="shrink-0 transition cursor-pointer"
+                                  title={isAll ? 'Remove all videos in folder' : 'Add all videos in folder'}
+                                >
+                                  {isAll ? (
+                                    <CheckSquare className="w-5 h-5 text-amber-500" />
+                                  ) : isPartial ? (
+                                    <MinusSquare className="w-5 h-5 text-amber-500" />
+                                  ) : (
+                                    <Square className="w-5 h-5 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200" />
+                                  )}
+                                </button>
+
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <Folder className="w-4 h-4 text-amber-500 shrink-0" />
+                                    <span className="font-bold text-sm text-neutral-900 dark:text-neutral-100 truncate" title={fg.folderPath}>
+                                      {fg.folderName}
+                                    </span>
+                                    {fg.folderPath !== fg.folderName && (
+                                      <span className="text-[11px] text-neutral-400 truncate max-w-[200px]" title={fg.folderPath}>
+                                        ({fg.folderPath})
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-2 text-[11px] text-neutral-500 dark:text-neutral-400 font-sans font-medium tabular-nums mt-0.5">
+                                    <span>{fg.files.length} {fg.files.length === 1 ? 'video' : 'videos'}</span>
+                                    <span>•</span>
+                                    {fg.totalDuration > 0 && (
+                                      <>
+                                        <span>{formatTime(fg.totalDuration)}</span>
+                                        <span>•</span>
+                                      </>
+                                    )}
+                                    <span>{(fg.totalSize / (1024 * 1024)).toFixed(1)} MB</span>
+                                    <span>•</span>
+                                    <span className={`font-semibold ${
+                                      isAll
+                                        ? 'text-amber-700 dark:text-amber-300'
+                                        : isPartial
+                                        ? 'text-amber-600 dark:text-amber-400'
+                                        : 'text-neutral-400'
+                                    }`}>
+                                      {isAll ? 'All in playlist' : isPartial ? `${includedCount}/${fg.files.length} in playlist` : '0 in playlist'}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Folder Actions */}
+                              <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+                                <button
+                                  onClick={() => toggleFolderInPlaylist(fg, currentPl.id)}
+                                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                                    isAll
+                                      ? 'bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-rose-500 hover:text-white'
+                                      : 'bg-neutral-900 dark:bg-white text-white dark:text-black hover:opacity-90'
+                                  }`}
+                                >
+                                  {isAll ? 'Remove Folder' : 'Add Folder to Playlist'}
+                                </button>
+                                <button
+                                  onClick={() => toggleFolderExpanded(fg.folderPath)}
+                                  className="p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500 hover:text-neutral-900 dark:hover:text-white transition cursor-pointer"
+                                  title={isExpanded ? 'Collapse folder contents' : 'Expand folder contents'}
+                                >
+                                  {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Expanded List of Videos in this Folder */}
+                            {isExpanded && (
+                              <div className="p-3 pt-0 border-t border-neutral-200/70 dark:border-neutral-800/70 space-y-1 bg-white/50 dark:bg-neutral-950/50">
+                                <div className="text-[11px] font-semibold text-neutral-400 py-1.5">
+                                  Videos in "{fg.folderName}":
+                                </div>
+                                {fg.files.map((file) => {
+                                  const isFileIn = currentPl.fileIds.includes(file.id);
+                                  return (
+                                    <div
+                                      key={`folder-file-${fg.folderPath}-${file.id}`}
+                                      onClick={() => toggleTrackInPlaylist(file.id, currentPl.id)}
+                                      className={`flex items-center justify-between p-2 rounded-lg border cursor-pointer text-xs transition ${
+                                        isFileIn
+                                          ? 'bg-amber-500/10 dark:bg-amber-500/20 border-amber-500/40 text-neutral-900 dark:text-neutral-100 font-medium'
+                                          : 'border-neutral-200 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-900 text-neutral-700 dark:text-neutral-300'
+                                      }`}
+                                    >
+                                      <div className="flex items-center gap-2 min-w-0 pr-2">
+                                        {isFileIn ? (
+                                          <CheckSquare className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                                        ) : (
+                                          <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                                        )}
+                                        <span className="truncate" title={file.name}>
+                                          {file.name}
+                                        </span>
+                                      </div>
+                                      <span className="text-[10px] font-sans font-medium tabular-nums text-neutral-400 shrink-0">
+                                        {file.duration ? formatTime(file.duration) : `${(file.size / (1024 * 1024)).toFixed(1)} MB`}
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* Bottom Footer */}
+              <div className="pt-3 border-t border-neutral-200 dark:border-neutral-800 flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0">
+                <div className="text-xs text-neutral-500 font-sans font-medium tabular-nums">
+                  Playlist "{currentPl.name}":{' '}
+                  <span className="font-bold text-neutral-900 dark:text-neutral-100">
+                    {currentPl.fileIds.length} {currentPl.fileIds.length === 1 ? 'track' : 'tracks'}
+                  </span>
+                  {totalPlDuration > 0 && ` • ${formatTime(totalPlDuration)}`}
+                  {totalPlSize > 0 && ` • ${(totalPlSize / (1024 * 1024)).toFixed(1)} MB`}
+                </div>
+
+                <button
+                  onClick={() => {
+                    setShowAddTracksToPlaylist(null);
+                    setOverlaySearchQuery('');
+                  }}
+                  className="w-full sm:w-auto px-5 py-2 rounded-xl bg-neutral-900 dark:bg-white text-white dark:text-black text-xs font-semibold hover:opacity-90 transition cursor-pointer shadow-sm"
+                >
+                  Done
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* CREATE PLAYLIST MODAL */}
       {showCreateModal && (
@@ -3181,6 +3794,10 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {showRemoteModal && (
+        <RemotePairingModal status={remoteHostStatus} onClose={() => setShowRemoteModal(false)} />
       )}
 
       <OfflineIndicator />

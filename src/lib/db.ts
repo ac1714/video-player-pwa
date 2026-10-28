@@ -173,10 +173,9 @@ export async function purgeLegacyStoredBlobs(): Promise<void> {
   try {
     if (typeof navigator !== 'undefined' && navigator.storage && typeof navigator.storage.getDirectory === 'function') {
       const root = await navigator.storage.getDirectory();
-      // @ts-expect-error entries on directory handle
-      if (typeof root.entries === 'function') {
-        // @ts-expect-error entries async iterator
-        for await (const [name] of root.entries()) {
+      const anyRoot = root as any;
+      if (typeof anyRoot.entries === 'function') {
+        for await (const [name] of anyRoot.entries()) {
           if (name.startsWith('video_')) {
             await root.removeEntry(name).catch(() => {});
           }
@@ -774,6 +773,73 @@ export async function removeFileFromPlaylist(fileId: string, playlistId: string)
       const pl: Playlist | undefined = getPlReq.result;
       if (pl) {
         pl.fileIds = pl.fileIds.filter(fId => fId !== fileId);
+        pl.updatedAt = Date.now();
+        plStore.put(pl);
+      }
+    };
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function addFilesToPlaylist(fileIds: string[], playlistId: string): Promise<void> {
+  if (fileIds.length === 0) return;
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_PLAYLISTS, STORE_FILE_PLAYLISTS], 'readwrite');
+    const relStore = tx.objectStore(STORE_FILE_PLAYLISTS);
+    const now = Date.now();
+    for (const fileId of fileIds) {
+      const relEntry: FilePlaylist = {
+        fileId,
+        playlistId,
+        addedAt: now,
+      };
+      relStore.put(relEntry);
+    }
+
+    const plStore = tx.objectStore(STORE_PLAYLISTS);
+    const getPlReq = plStore.get(playlistId);
+    getPlReq.onsuccess = () => {
+      const pl: Playlist | undefined = getPlReq.result;
+      if (pl) {
+        let changed = false;
+        for (const fileId of fileIds) {
+          if (!pl.fileIds.includes(fileId)) {
+            pl.fileIds.push(fileId);
+            changed = true;
+          }
+        }
+        if (changed) {
+          pl.updatedAt = Date.now();
+          plStore.put(pl);
+        }
+      }
+    };
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function removeFilesFromPlaylist(fileIds: string[], playlistId: string): Promise<void> {
+  if (fileIds.length === 0) return;
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_PLAYLISTS, STORE_FILE_PLAYLISTS], 'readwrite');
+    const relStore = tx.objectStore(STORE_FILE_PLAYLISTS);
+    for (const fileId of fileIds) {
+      relStore.delete([fileId, playlistId]);
+    }
+
+    const plStore = tx.objectStore(STORE_PLAYLISTS);
+    const getPlReq = plStore.get(playlistId);
+    getPlReq.onsuccess = () => {
+      const pl: Playlist | undefined = getPlReq.result;
+      if (pl) {
+        const removeSet = new Set(fileIds);
+        pl.fileIds = pl.fileIds.filter((fId) => !removeSet.has(fId));
         pl.updatedAt = Date.now();
         plStore.put(pl);
       }
