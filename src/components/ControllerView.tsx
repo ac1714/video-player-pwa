@@ -185,13 +185,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
   const [showAddTracksToPlaylist, setShowAddTracksToPlaylist] = useState<Playlist | null>(null);
   const [fileToRename, setFileToRename] = useState<MediaFile | null>(null);
   const [sortBy, setSortBy] = useState<'name' | 'playCount' | 'recent' | 'duration'>('name');
-  const [promptRenameOnImport, setPromptRenameOnImport] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('pwa_video_prompt_rename_on_import') === 'true';
-    } catch {
-      return false;
-    }
-  });
   const [overlaySearchQuery, setOverlaySearchQuery] = useState<string>('');
   const [overlayTab, setOverlayTab] = useState<'videos' | 'folders'>('videos');
   const [expandedFolderPaths, setExpandedFolderPaths] = useState<Set<string>>(new Set());
@@ -1502,9 +1495,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
           await loadDatabase();
           setNeedsDirectoryReauth(false);
           setStatusNotice(`Imported ${result.count} video file${result.count === 1 ? '' : 's'}.`);
-          if (promptRenameOnImport && result.files && result.files.length > 0) {
-            setFileToRename(result.files[0]);
-          }
           return;
         } else {
           setStatusNotice('No video files found in selected folder.');
@@ -1548,9 +1538,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         setStatusNotice(
           `Imported ${result.count} video file${result.count === 1 ? '' : 's'}${plName ? ` and added to "${plName}"` : ''}.`
         );
-        if (promptRenameOnImport && result.files && result.files.length > 0) {
-          setFileToRename(result.files[0]);
-        }
       }
     } catch (err) {
       console.error('Folder input error:', err);
@@ -1601,9 +1588,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         if (result.count > 0) {
           await loadDatabase();
           setStatusNotice(`Imported ${result.count} video file${result.count === 1 ? '' : 's'}.`);
-          if (promptRenameOnImport && result.files && result.files.length > 0) {
-            setFileToRename(result.files[0]);
-          }
           return;
         }
       } catch (err: any) {
@@ -1629,9 +1613,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         setStatusNotice('No video files found.');
       } else {
         setStatusNotice(`Imported ${result.count} video file${result.count === 1 ? '' : 's'}.`);
-        if (promptRenameOnImport && result.files && result.files.length > 0) {
-          setFileToRename(result.files[0]);
-        }
       }
     } catch (err) {
       console.error('File input error:', err);
@@ -1674,9 +1655,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         setStatusNotice('No video files found in dropped items.');
       } else {
         setStatusNotice(`Imported ${result.count} video file${result.count === 1 ? '' : 's'}.`);
-        if (promptRenameOnImport && result.files && result.files.length > 0) {
-          setFileToRename(result.files[0]);
-        }
       }
     } catch (err) {
       console.error('Drop error:', err);
@@ -1976,7 +1954,58 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
         </div>
 
         {/* Right: Actions */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap justify-end">
+          {/* Import Folder Button */}
+          <button
+            id="import-folder-btn"
+            onClick={handleIngestFolder}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-black text-xs font-semibold hover:opacity-90 active:scale-95 transition cursor-pointer shadow-sm"
+            title="Import folder of video files"
+          >
+            <FolderPlus className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Import Folder</span>
+            <span className="sm:hidden">Folder</span>
+          </button>
+
+          {/* Import Files Button */}
+          <button
+            id="import-files-btn"
+            onClick={handleIngestFiles}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-900 hover:bg-neutral-200 dark:hover:bg-neutral-800 border border-neutral-200 dark:border-neutral-800 text-xs font-semibold text-neutral-800 dark:text-neutral-200 active:scale-95 transition cursor-pointer"
+            title="Import individual video files"
+          >
+            <FilePlus className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Import Files</span>
+            <span className="sm:hidden">Files</span>
+          </button>
+
+          {/* Storage & Cache Management Button */}
+          <button
+            id="storage-utility-btn"
+            onClick={() => {
+              loadStorageStats();
+              setShowStorageModal(true);
+            }}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-900 hover:bg-neutral-200 dark:hover:bg-neutral-800 border border-neutral-200 dark:border-neutral-800 text-xs font-semibold text-neutral-700 dark:text-neutral-300 active:scale-95 transition cursor-pointer"
+            title="Manage Storage and Video Cache"
+          >
+            <HardDrive className="w-3.5 h-3.5 text-neutral-500" />
+            <span className="hidden md:inline">Storage</span>
+          </button>
+
+          {/* Reauthorize Access Button (when permission needs elevation) */}
+          {needsDirectoryReauth && (
+            <button
+              id="header-reauthorize-btn"
+              onClick={handleReauthorizeFolder}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition cursor-pointer shadow-sm animate-pulse"
+              title="Select folder to reconnect disk access to all catalog videos without re-uploading"
+            >
+              <FolderOpen className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Re-link</span>
+            </button>
+          )}
+
           {/* Theme Toggle (Right side of header) */}
           <ThemeToggle />
 
@@ -2150,83 +2179,6 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 space-y-6">
-        {/* Ingestion Action Row */}
-        <section
-          id="ingestion-action-bar"
-          className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-xl bg-white dark:bg-neutral-950 border border-neutral-200 dark:border-neutral-800 shadow-sm"
-        >
-          <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">
-            Local Files
-          </span>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              id="import-folder-btn"
-              onClick={handleIngestFolder}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 dark:bg-white text-white dark:text-black text-xs font-semibold hover:opacity-90 transition cursor-pointer"
-            >
-              <FolderPlus className="w-3.5 h-3.5" />
-              <span>Import Folder</span>
-            </button>
-
-            <button
-              id="import-files-btn"
-              onClick={handleIngestFiles}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-900 hover:bg-neutral-200 dark:hover:bg-neutral-800 border border-neutral-200 dark:border-neutral-800 text-xs font-semibold text-neutral-800 dark:text-neutral-200 transition cursor-pointer"
-            >
-              <FilePlus className="w-3.5 h-3.5" />
-              <span>Import Files</span>
-            </button>
-
-            {/* Prompt to rename when importing toggle */}
-            <label
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 text-xs font-medium text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-white cursor-pointer select-none transition"
-              title="When checked, a rename dialog will automatically prompt whenever you import videos"
-            >
-              <input
-                type="checkbox"
-                checked={promptRenameOnImport}
-                onChange={(e) => {
-                  setPromptRenameOnImport(e.target.checked);
-                  try {
-                    localStorage.setItem('pwa_video_prompt_rename_on_import', String(e.target.checked));
-                  } catch {}
-                }}
-                className="w-3.5 h-3.5 rounded text-amber-500 focus:ring-amber-400 cursor-pointer"
-              />
-              <span className="hidden sm:inline">Rename on import</span>
-            </label>
-
-
-
-            {/* Reauthorize Access Button (when permission needs elevation) */}
-            {needsDirectoryReauth && (
-              <button
-                id="reauthorize-action-btn"
-                onClick={handleReauthorizeFolder}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition cursor-pointer shadow-sm animate-pulse"
-                title="Select folder to reconnect disk access to all catalog videos without re-uploading"
-              >
-                <FolderOpen className="w-3.5 h-3.5" />
-                <span>Re-link Folder</span>
-              </button>
-            )}
-
-            {/* Storage & Cache Management Button */}
-            <button
-              id="storage-utility-btn"
-              onClick={() => {
-                loadStorageStats();
-                setShowStorageModal(true);
-              }}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-900 hover:bg-neutral-200 dark:hover:bg-neutral-800 border border-neutral-200 dark:border-neutral-800 text-xs font-semibold text-neutral-700 dark:text-neutral-300 transition cursor-pointer"
-              title="Manage Storage and Video Cache"
-            >
-              <HardDrive className="w-3.5 h-3.5 text-neutral-500" />
-              <span>Storage & Cache</span>
-            </button>
-          </div>
-        </section>
 
         {/* Browser Permission Re-Authorization Banner */}
         {needsDirectoryReauth && (
@@ -2499,10 +2451,15 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
                             {/* Play count badge */}
                             <span
-                              className="inline-flex items-center gap-1 text-[10px] font-sans font-medium px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 text-neutral-600 dark:text-neutral-400 tabular-nums"
-                              title={`${file.playCount || 0} qualifying plays (minimum watch duration met)`}
+                              id={`play-count-badge-${file.id}`}
+                              className={`inline-flex items-center gap-1 text-[11px] font-sans font-semibold px-2 py-0.5 rounded-full border tabular-nums transition ${
+                                (file.playCount || 0) > 0
+                                  ? 'bg-amber-500/15 border-amber-500/40 text-amber-700 dark:text-amber-300 shadow-xs'
+                                  : 'bg-neutral-100 dark:bg-neutral-900 border-neutral-200 dark:border-neutral-800 text-neutral-500'
+                              }`}
+                              title={`${file.playCount || 0} qualifying plays (requires watching 120s or full duration)`}
                             >
-                              <Play className="w-2.5 h-2.5 fill-current opacity-70" />
+                              <Play className={`w-2.5 h-2.5 ${(file.playCount || 0) > 0 ? 'fill-amber-500 text-amber-500' : 'fill-current opacity-40'}`} />
                               <span>{file.playCount || 0} {file.playCount === 1 ? 'play' : 'plays'}</span>
                             </span>
                           </div>
@@ -3082,8 +3039,13 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                   {playerState}
                 </span>
                 {activeTrack && (
-                  <span className="text-[10px] font-sans text-neutral-500 dark:text-neutral-400 font-medium">
-                    · {(activeTrack.playCount || 0)} {(activeTrack.playCount === 1 ? 'play' : 'plays')}
+                  <span
+                    id="active-track-play-count-pill"
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 border border-amber-500/30 text-amber-700 dark:text-amber-300 tabular-nums"
+                    title={`Watched ${activeTrack.playCount || 0} time${activeTrack.playCount === 1 ? '' : 's'} (120s watch time threshold)`}
+                  >
+                    <Play className="w-2.5 h-2.5 fill-amber-500 text-amber-500" />
+                    <span>{(activeTrack.playCount || 0)} {(activeTrack.playCount === 1 ? 'play' : 'plays')}</span>
                   </span>
                 )}
               </div>
