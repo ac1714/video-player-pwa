@@ -916,6 +916,22 @@ const UnpairedScreen: React.FC = () => {
           </div>
           {error && <p className="mt-2 text-xs text-rose-400">{error}</p>}
         </div>
+
+        <div className="mt-6 pt-4 border-t border-white/10 text-center">
+          <button
+            onClick={() => {
+              setDeviceRole('full');
+              const u = new URL(window.location.href);
+              u.search = '';
+              u.hash = '';
+              window.location.href = u.toString();
+            }}
+            className="text-xs text-neutral-400 hover:text-white transition flex items-center justify-center gap-1.5 mx-auto active:scale-95"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            <span>Open Full Video Player on this device</span>
+          </button>
+        </div>
       </div>
     </div>
   );

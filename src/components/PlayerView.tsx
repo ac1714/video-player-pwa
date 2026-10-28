@@ -2010,7 +2010,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         }
         playSessionRef.current.lastMediaTime = cur;
 
-        const threshold = dur > 0 ? Math.min(15, dur * 0.5) : 15;
+        const threshold = dur > 0 && dur < 120 ? dur : 120;
         if (!playSessionRef.current.counted && playSessionRef.current.accumulatedSeconds >= threshold) {
           playSessionRef.current.counted = true;
           incrementPlayCount(activeTrackId).then((newCount) => {
@@ -2188,8 +2188,14 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     });
 
     if (currentTrack) {
-      // If short track ended before threshold, qualify it now upon completed play
-      if (!playSessionRef.current.counted && playSessionRef.current.trackId === currentTrack.id) {
+      const dur = duration || videoRef.current?.duration || currentTrack.duration || 0;
+      const threshold = dur > 0 && dur < 120 ? dur : 120;
+      // Only qualify if the required duration threshold (120s or full duration for clips <120s) was actually watched
+      if (
+        !playSessionRef.current.counted &&
+        playSessionRef.current.trackId === currentTrack.id &&
+        playSessionRef.current.accumulatedSeconds >= threshold
+      ) {
         playSessionRef.current.counted = true;
         incrementPlayCount(currentTrack.id).then((newCount) => {
           syncChannel.post({

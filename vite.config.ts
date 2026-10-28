@@ -51,6 +51,21 @@ export default defineConfig(({ mode }) => {
               purpose: 'maskable',
             },
           ],
+          shortcuts: [
+            {
+              name: 'Phone Remote',
+              short_name: 'Remote',
+              description: 'Open mobile remote control for Video Player',
+              url: `${base}?view=remote`,
+              icons: [
+                {
+                  src: `${base}pwa-192x192.png`,
+                  sizes: '192x192',
+                  type: 'image/png',
+                },
+              ],
+            },
+          ],
         },
         devOptions: {
           enabled: true,

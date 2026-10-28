@@ -126,6 +126,7 @@ import { useRemoteHostBridge } from '../hooks/useRemoteHostBridge';
 import { RemotePairingModal, RemoteStatusDot } from './RemotePairingModal';
 import { RenameModal } from './RenameModal';
 import type { RemoteCommand } from '../lib/remote/protocol';
+import { setDeviceRole } from '../lib/remote/remoteClient';
 
 interface ControllerViewProps {
   onOpenPlayerInNewTab?: (trackId?: string, currentTime?: number) => void;
@@ -1983,15 +1984,15 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
           <button
             id="phone-remote-btn"
             onClick={() => setShowRemoteModal(true)}
-            className="relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 bg-neutral-100 dark:bg-neutral-900 hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300 text-xs font-semibold transition cursor-pointer active:scale-95"
+            className="relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 text-xs font-bold transition cursor-pointer active:scale-95 shadow-sm"
             title={
               remoteHostStatus.connectedDevices.length > 0
                 ? `Phone remote connected: ${remoteHostStatus.connectedDevices.join(', ')}`
                 : 'Control playback from your phone'
             }
           >
-            <Smartphone className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Remote</span>
+            <Smartphone className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+            <span>Remote</span>
             <RemoteStatusDot status={remoteHostStatus} />
           </button>
 
@@ -2070,6 +2071,31 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
           <PWAInstallButton />
         </div>
       </header>
+
+      {/* Mobile Remote Switch Banner */}
+      <div className="md:hidden bg-gradient-to-r from-amber-500/15 via-orange-500/10 to-amber-500/5 border-b border-amber-500/30 px-3.5 py-2 flex items-center justify-between gap-2.5 z-20">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center text-black shrink-0 shadow-sm">
+            <Smartphone className="w-3.5 h-3.5" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs font-bold text-neutral-900 dark:text-neutral-100 truncate">Phone Remote Control</p>
+            <p className="text-[10px] text-neutral-500 dark:text-neutral-400 truncate">Control playback on your TV or computer</p>
+          </div>
+        </div>
+        <button
+          id="mobile-banner-open-remote-btn"
+          onClick={() => {
+            setDeviceRole('remote');
+            const u = new URL(window.location.href);
+            u.searchParams.set('view', 'remote');
+            window.location.href = u.toString();
+          }}
+          className="shrink-0 px-3 py-1 rounded-lg bg-gradient-to-r from-amber-400 to-orange-500 hover:brightness-110 active:scale-95 text-black font-bold text-xs shadow transition cursor-pointer"
+        >
+          Open Remote
+        </button>
+      </div>
 
       {/* Popout Blocked Fallback Banner */}
       {popoutBlockedUrl && (

@@ -8,6 +8,7 @@ import QRCode from 'qrcode';
 import { Smartphone, X, Copy, Check, RotateCcw, Power, Wifi, Loader2, AlertTriangle, PauseCircle } from 'lucide-react';
 import { remoteHost, type HostStatusSnapshot } from '../lib/remote/remoteHost';
 import { getRemoteUrl } from '../lib/remote/protocol';
+import { setDeviceRole } from '../lib/remote/remoteClient';
 
 interface Props {
   status: HostStatusSnapshot;
@@ -129,6 +130,26 @@ export const RemotePairingModal: React.FC<Props> = ({ status, onClose }) => {
         <div className={`flex items-center gap-2 text-xs font-medium ${statusLine.tone}`}>
           {statusLine.icon}
           <span className="truncate">{statusLine.text}</span>
+        </div>
+
+        {/* Quick action to switch THIS device to Remote Control */}
+        <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-bold text-amber-600 dark:text-amber-400">Using this device as your remote?</p>
+            <p className="text-[11px] text-neutral-500 dark:text-neutral-400 truncate">Switch to the mobile remote interface</p>
+          </div>
+          <button
+            id="modal-open-remote-mode-btn"
+            onClick={() => {
+              setDeviceRole('remote');
+              const u = new URL(window.location.href);
+              u.searchParams.set('view', 'remote');
+              window.location.href = u.toString();
+            }}
+            className="shrink-0 px-3 py-1.5 rounded-lg bg-gradient-to-r from-amber-400 to-orange-500 hover:brightness-110 text-black text-xs font-bold active:scale-95 transition shadow-sm"
+          >
+            Open Remote
+          </button>
         </div>
 
         {!status.enabled ? (

@@ -15,7 +15,12 @@ import { syncChannel, getPopoutUrl } from './lib/syncChannel';
 import { getActivePlaybackState, saveActivePlaybackState } from './lib/localStorageState';
 import { getMemoryFile } from './lib/db';
 import { RemoteView } from './components/RemoteView';
-import { getDeviceRole } from './lib/remote/remoteClient';
+import { getDeviceRole, loadPairing } from './lib/remote/remoteClient';
+
+function isMobileDevice(): boolean {
+  if (typeof window === 'undefined') return false;
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || window.innerWidth < 768;
+}
 
 function getInitialViewMode(): 'controller' | 'player' | 'split' | 'remote' {
   if (typeof window === 'undefined') return 'split';
@@ -24,13 +29,22 @@ function getInitialViewMode(): 'controller' | 'player' | 'split' | 'remote' {
   const viewParam = params.get('view')?.toLowerCase();
   const modeParam = params.get('mode')?.toLowerCase();
   const hash = typeof window !== 'undefined' ? window.location.hash : '';
+  const role = getDeviceRole();
+  const hasPairing = !!loadPairing();
 
   if (
     viewParam === 'remote' ||
     path.includes('remote.html') ||
     hash.includes('pair=') ||
-    (getDeviceRole() === 'remote' && !viewParam && !path.includes('player') && !path.includes('controller'))
+    (role === 'remote' && !viewParam && !path.includes('player') && !path.includes('controller')) ||
+    (hasPairing && role !== 'full' && !viewParam && !path.includes('player') && !path.includes('controller'))
   ) {
+    return 'remote';
+  }
+
+  // When installed on a phone as a standalone PWA, default to Remote control unless full mode was chosen
+  const isStandalone = typeof window !== 'undefined' && (window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone === true);
+  if (isStandalone && isMobileDevice() && role !== 'full' && !viewParam && !path.includes('player') && !path.includes('controller')) {
     return 'remote';
   }
 
