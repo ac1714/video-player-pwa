@@ -11,6 +11,7 @@ import { Peer } from 'peerjs';
 import type { DataConnection } from 'peerjs';
 import {
   REMOTE_PROTOCOL_VERSION,
+  WEBRTC_ICE_SERVERS,
   type HostToRemoteMessage,
   type PairingInfo,
   type RemoteCommand,
@@ -22,7 +23,7 @@ import {
 const PAIRING_KEY = 'pwa_remote_pairing';
 const DEVICE_ROLE_KEY = 'pwa_remote_device_role';
 const HEARTBEAT_MS = 4000;
-const DEAD_AFTER_MS = 11000;
+const DEAD_AFTER_MS = 35000;
 
 export type ClientStatus = 'unpaired' | 'connecting' | 'connected' | 'host-offline' | 'denied' | 'error';
 
@@ -197,9 +198,8 @@ class RemoteClient {
       }
       return;
     }
-    this.retryAttempt = 0;
-    this.clearRetry();
-    this.connect();
+    // Clean retry on wake or tab refocus
+    this.retryNow();
   }
 
   private connect() {
@@ -207,14 +207,16 @@ class RemoteClient {
     this.clearRetry();
     if (this.status !== 'host-offline') this.setStatus('connecting');
 
-    // Reuse an open broker connection if we have one; otherwise (re)create it.
-    if (this.peer && !this.peer.destroyed && !this.peer.disconnected && this.peer.open) {
-      this.openDataConnection();
-      return;
-    }
+    // Always create a clean peer on reconnect to avoid PeerJS RTCPeerConnection dirty state
     this.destroyPeer();
 
-    const peer = new Peer({ debug: 0 });
+    const peer = new Peer({
+      debug: 0,
+      config: {
+        iceServers: WEBRTC_ICE_SERVERS,
+        iceCandidatePoolSize: 10,
+      },
+    });
     this.peer = peer;
 
     peer.on('open', () => {
@@ -225,7 +227,10 @@ class RemoteClient {
     peer.on('disconnected', () => {
       // Broker socket dropped; an established P2P data channel can keep working.
       if (this.peer !== peer || peer.destroyed) return;
-      if (!this.conn?.open) this.scheduleRetry();
+      if (!this.conn?.open) {
+        this.destroyPeer();
+        this.scheduleRetry();
+      }
     });
 
     peer.on('error', (err: any) => {
@@ -234,7 +239,8 @@ class RemoteClient {
       if (type === 'peer-unavailable') {
         this.setStatus('host-offline', 'Your computer isn’t reachable. Make sure the Video Player is open on it.');
         this.closeConn();
-        this.scheduleRetry(10000);
+        this.destroyPeer();
+        this.scheduleRetry(4000);
         return;
       }
       if (type === 'browser-incompatible') {
@@ -259,9 +265,10 @@ class RemoteClient {
     const openTimeout = setTimeout(() => {
       if (this.conn === conn && !conn.open) {
         this.closeConn();
+        this.destroyPeer();
         this.scheduleRetry();
       }
-    }, 12000);
+    }, 10000);
 
     conn.on('open', () => {
       clearTimeout(openTimeout);
@@ -286,6 +293,7 @@ class RemoteClient {
       if (this.conn !== conn) return;
       this.conn = null;
       this.stopHeartbeat();
+      this.destroyPeer();
       if (this.status === 'denied' || !this.pairing) return;
       this.setStatus('connecting', 'Connection lost — reconnecting…');
       this.scheduleRetry();

@@ -152,9 +152,17 @@ export type SyncMessage =
     }
   | {
       type: 'NEXT_TRACK';
+      payload?: {
+        currentTrackId?: string;
+        targetTrackId?: string;
+      };
     }
   | {
       type: 'PREV_TRACK';
+      payload?: {
+        currentTrackId?: string;
+        targetTrackId?: string;
+      };
     }
   | {
       type: 'PIP_CHANGE';

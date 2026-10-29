@@ -13,6 +13,7 @@ import type { DataConnection } from 'peerjs';
 import {
   HOST_ID_PREFIX,
   REMOTE_PROTOCOL_VERSION,
+  WEBRTC_ICE_SERVERS,
   randomId,
   type HostToRemoteMessage,
   type PairingInfo,
@@ -303,7 +304,13 @@ class RemoteHost {
     this.clearRetry();
     this.setStatus('connecting');
 
-    const peer = new Peer(this.config.hostId, { debug: 0 });
+    const peer = new Peer(this.config.hostId, {
+      debug: 0,
+      config: {
+        iceServers: WEBRTC_ICE_SERVERS,
+        iceCandidatePoolSize: 10,
+      },
+    });
     this.peer = peer;
 
     peer.on('open', () => {
@@ -470,6 +477,9 @@ class RemoteHost {
       switch (msg.t) {
         case 'ping':
           this.send(conn, { t: 'pong', ts: msg.ts });
+          if (this.playback) {
+            this.send(conn, { t: 'state', state: { ...this.playback, sentAt: Date.now() } });
+          }
           break;
         case 'requestLibrary':
           if (this.library) this.send(conn, { t: 'library', library: this.library });

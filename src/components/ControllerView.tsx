@@ -643,9 +643,11 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
         case 'TIME_UPDATE':
           setIsPlayerConnected(true);
-          // Ignore time updates from other tracks to prevent timeline desynchronization
-          if (msg.payload.trackId && activeTrackIdRef.current && msg.payload.trackId !== activeTrackIdRef.current) {
-            break;
+          // If the player changed tracks (e.g. popout next/prev/autoplay), synchronize active track
+          if (msg.payload.trackId && msg.payload.trackId !== activeTrackIdRef.current) {
+            setActiveTrackIdState(msg.payload.trackId);
+            activeTrackIdRef.current = msg.payload.trackId;
+            setActiveTrack(msg.payload.trackId);
           }
           if (!isScrubbingRef.current && Number.isFinite(msg.payload.currentTime)) {
             setCurrentTime(msg.payload.currentTime);
@@ -757,21 +759,25 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
         case 'TRACK_ENDED': {
           setIsPlayerConnected(true);
-          if (isLoopingRef.current && activeTrackIdRef.current) {
-            dispatchLoadTrack(activeTrackIdRef.current, true);
-          } else if (autoPlayNextRef.current) {
+          // PlayerView handles autonomous queue advancement and broadcasts LOAD_TRACK
+          break;
+        }
+
+        case 'NEXT_TRACK': {
+          if (msg.payload?.targetTrackId && msg.payload.targetTrackId !== activeTrackIdRef.current) {
+            dispatchLoadTrack(msg.payload.targetTrackId, true, 0);
+          } else {
             handlePlayNextRef.current();
           }
           break;
         }
 
-        case 'NEXT_TRACK': {
-          handlePlayNextRef.current();
-          break;
-        }
-
         case 'PREV_TRACK': {
-          handlePlayPrevRef.current();
+          if (msg.payload?.targetTrackId && msg.payload.targetTrackId !== activeTrackIdRef.current) {
+            dispatchLoadTrack(msg.payload.targetTrackId, true, 0);
+          } else {
+            handlePlayPrevRef.current();
+          }
           break;
         }
 
@@ -1175,42 +1181,149 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
     });
   };
 
-  // Next / Previous Navigation using Queue
-  const handlePlayNext = () => {
+  // Next / Previous Navigation using Queue, Playlist, and Catalog
+  const handlePlayNext = useCallback(() => {
     const currentQueue = queueRef.current;
-    if (currentQueue.length === 0) {
-      if (mediaFiles.length > 0) {
-        dispatchLoadTrack(mediaFiles[0].id, true);
-      }
-      return;
-    }
-    const curIdx = currentQueue.indexOf(activeTrackIdRef.current || '');
-    if (curIdx === -1) {
-      dispatchLoadTrack(currentQueue[0], true);
-    } else if (curIdx + 1 < currentQueue.length) {
-      dispatchLoadTrack(currentQueue[curIdx + 1], true);
-    } else if (isLoopingRef.current) {
-      dispatchLoadTrack(currentQueue[0], true);
-    }
-  };
-  handlePlayNextRef.current = handlePlayNext;
+    const currentId = activeTrackIdRef.current || '';
+    const files = mediaFilesRef.current.length > 0 ? mediaFilesRef.current : mediaFiles;
+    const allPlaylists = playlistsRef.current.length > 0 ? playlistsRef.current : playlists;
+    const currentPlId = activePlaylistIdRef.current || activePlaylistId;
 
-  const handlePlayPrev = () => {
-    const currentQueue = queueRef.current;
-    if (currentQueue.length === 0) {
+    let targetNextId: string | null = null;
+
+    // 1. If queue has items:
+    if (currentQueue.length > 0) {
+      const curIdx = currentId ? currentQueue.indexOf(currentId) : -1;
+      if (curIdx >= 0) {
+        if (currentQueue.length > 1) {
+          const nextIdx = (curIdx + 1) % currentQueue.length;
+          targetNextId = currentQueue[nextIdx];
+        }
+        // If queue only has 1 item and it is currentId, do not pick currentId; fall through!
+      } else {
+        // Current track is not in queue; play the first item in queue
+        targetNextId = currentQueue[0];
+      }
+    }
+
+    // 2. Active playlist fallback: If currently playing in a playlist
+    if (!targetNextId && currentPlId) {
+      const pl = allPlaylists.find((p) => p.id === currentPlId);
+      if (pl && pl.fileIds.length > 0) {
+        const curIdx = currentId ? pl.fileIds.indexOf(currentId) : -1;
+        if (curIdx >= 0) {
+          if (pl.fileIds.length > 1) {
+            const nextIdx = (curIdx + 1) % pl.fileIds.length;
+            targetNextId = pl.fileIds[nextIdx];
+          }
+        } else {
+          targetNextId = pl.fileIds[0];
+        }
+      }
+    }
+
+    // 3. Fallback to Catalog (files):
+    if (!targetNextId && files.length > 0) {
+      const curIdx = currentId ? files.findIndex((f) => f.id === currentId) : -1;
+      if (curIdx >= 0) {
+        if (files.length > 1) {
+          const nextIdx = (curIdx + 1) % files.length;
+          targetNextId = files[nextIdx].id;
+        }
+      } else {
+        targetNextId = files[0].id;
+      }
+    }
+
+    if (targetNextId && targetNextId !== currentId) {
+      dispatchLoadTrack(targetNextId, true, 0);
+    } else {
+      // If only 1 file exists in the whole library, seek to 0
+      dispatchSeek(0);
+    }
+  }, [mediaFiles, playlists, activePlaylistId, dispatchLoadTrack, dispatchSeek]);
+
+  const handlePlayPrev = useCallback(() => {
+    const curTime = currentTimeRef.current || 0;
+    // Standard media player UX: If past 3s, first click rewinds to beginning of current track
+    if (curTime > 3) {
       dispatchSeek(0);
       return;
     }
-    const curIdx = currentQueue.indexOf(activeTrackIdRef.current || '');
-    if (curIdx > 0) {
-      dispatchLoadTrack(currentQueue[curIdx - 1], true, 0);
-    } else if (isLoopingRef.current) {
-      dispatchLoadTrack(currentQueue[currentQueue.length - 1], true, 0);
+
+    const currentQueue = queueRef.current;
+    const currentId = activeTrackIdRef.current || '';
+    const files = mediaFilesRef.current.length > 0 ? mediaFilesRef.current : mediaFiles;
+    const allPlaylists = playlistsRef.current.length > 0 ? playlistsRef.current : playlists;
+    const currentPlId = activePlaylistIdRef.current || activePlaylistId;
+
+    let targetPrevId: string | null = null;
+
+    // 1. Check queue:
+    if (currentQueue.length > 0) {
+      const curIdx = currentId ? currentQueue.indexOf(currentId) : -1;
+      if (curIdx >= 0) {
+        if (currentQueue.length > 1) {
+          const prevIdx = (curIdx - 1 + currentQueue.length) % currentQueue.length;
+          targetPrevId = currentQueue[prevIdx];
+        }
+      } else {
+        targetPrevId = currentQueue[currentQueue.length - 1];
+      }
+    }
+
+    // 2. Active playlist fallback:
+    if (!targetPrevId && currentPlId) {
+      const pl = allPlaylists.find((p) => p.id === currentPlId);
+      if (pl && pl.fileIds.length > 0) {
+        const curIdx = currentId ? pl.fileIds.indexOf(currentId) : -1;
+        if (curIdx >= 0) {
+          if (pl.fileIds.length > 1) {
+            const prevIdx = (curIdx - 1 + pl.fileIds.length) % pl.fileIds.length;
+            targetPrevId = pl.fileIds[prevIdx];
+          }
+        } else {
+          targetPrevId = pl.fileIds[pl.fileIds.length - 1];
+        }
+      }
+    }
+
+    // 3. Fallback to Catalog (files):
+    if (!targetPrevId && files.length > 0) {
+      const curIdx = currentId ? files.findIndex((f) => f.id === currentId) : -1;
+      if (curIdx >= 0) {
+        if (files.length > 1) {
+          const prevIdx = (curIdx - 1 + files.length) % files.length;
+          targetPrevId = files[prevIdx].id;
+        }
+      } else {
+        targetPrevId = files[files.length - 1].id;
+      }
+    }
+
+    if (targetPrevId && targetPrevId !== currentId) {
+      dispatchLoadTrack(targetPrevId, true, 0);
     } else {
       dispatchSeek(0);
     }
-  };
-  handlePlayPrevRef.current = handlePlayPrev;
+  }, [mediaFiles, playlists, activePlaylistId, dispatchLoadTrack, dispatchSeek]);
+
+  useEffect(() => {
+    handlePlayNextRef.current = handlePlayNext;
+    handlePlayPrevRef.current = handlePlayPrev;
+    if (typeof window !== 'undefined') {
+      (window as any).__PWA_PLAY_NEXT__ = () => handlePlayNext();
+      (window as any).__PWA_PLAY_PREV__ = () => handlePlayPrev();
+      (window as any).__PWA_DISPATCH_LOAD_TRACK__ = (id: string, auto?: boolean, time?: number) => dispatchLoadTrack(id, auto ?? true, time ?? 0);
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        delete (window as any).__PWA_PLAY_NEXT__;
+        delete (window as any).__PWA_PLAY_PREV__;
+        delete (window as any).__PWA_DISPATCH_LOAD_TRACK__;
+      }
+    };
+  }, [handlePlayNext, handlePlayPrev, dispatchLoadTrack]);
 
   const handleSkip = (delta: number) => {
     const dur = durationRef.current || duration || 0;
@@ -2700,13 +2813,29 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                                     {idx + 1}
                                   </span>
                                   <button
-                                    onClick={() => dispatchLoadTrack(file.id, true)}
+                                    onClick={() => {
+                                      setActivePlaylistIdState(pl.id);
+                                      setActivePlaylistId(pl.id);
+                                      setQueue(pl.fileIds);
+                                      syncChannel.post({ type: 'QUEUE_UPDATED', payload: { queue: pl.fileIds } });
+                                      dispatchLoadTrack(file.id, true);
+                                    }}
                                     className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300 transition cursor-pointer"
                                     title="Play track"
                                   >
                                     <Play className="w-3 h-3 fill-current ml-0.5" />
                                   </button>
-                                  <span className="truncate font-medium text-neutral-800 dark:text-neutral-200" title={file.name}>
+                                  <span
+                                    onClick={() => {
+                                      setActivePlaylistIdState(pl.id);
+                                      setActivePlaylistId(pl.id);
+                                      setQueue(pl.fileIds);
+                                      syncChannel.post({ type: 'QUEUE_UPDATED', payload: { queue: pl.fileIds } });
+                                      dispatchLoadTrack(file.id, true);
+                                    }}
+                                    className="truncate font-medium text-neutral-800 dark:text-neutral-200 cursor-pointer hover:underline"
+                                    title={file.name}
+                                  >
                                     {file.name}
                                   </span>
                                 </div>
@@ -2935,7 +3064,11 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
                           </button>
 
                           <button
-                            onClick={() => dispatchLoadTrack(file.id, true)}
+                            onClick={() => {
+                              setActivePlaylistIdState(null);
+                              setActivePlaylistId(null);
+                              dispatchLoadTrack(file.id, true);
+                            }}
                             className={`w-7 h-7 rounded flex items-center justify-center shrink-0 transition cursor-pointer ${
                               isPlayingThis
                                 ? 'bg-neutral-900 dark:bg-white text-white dark:text-black'
@@ -2948,7 +3081,11 @@ export const ControllerView: React.FC<ControllerViewProps> = ({
 
                           <div className="min-w-0 flex-1">
                             <p
-                              onClick={() => dispatchLoadTrack(file.id, true)}
+                              onClick={() => {
+                                setActivePlaylistIdState(null);
+                                setActivePlaylistId(null);
+                                dispatchLoadTrack(file.id, true);
+                              }}
                               className="text-xs sm:text-sm font-semibold text-neutral-900 dark:text-neutral-100 truncate cursor-pointer hover:underline"
                               title={file.name}
                             >

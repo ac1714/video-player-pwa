@@ -9,8 +9,17 @@
 
 export const REMOTE_PROTOCOL_VERSION = 1;
 
-/** Prefix for host peer IDs on the PeerJS broker (keeps IDs recognizable & namespaced). */
 export const HOST_ID_PREFIX = 'vps-remote-';
+
+/** Multi-provider STUN servers to guarantee rapid NAT traversal on cellular & Wi-Fi networks */
+export const WEBRTC_ICE_SERVERS: RTCIceServer[] = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+];
 
 export interface RemoteTrack {
   id: string;

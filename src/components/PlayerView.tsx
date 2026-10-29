@@ -38,7 +38,7 @@ import {
   X,
 } from 'lucide-react';
 import { MediaFile, SyncMessage } from '../types';
-import { getMediaFile, getMemoryFile, registerMemoryFile, getAllDirectoryHandles, getAllMediaFiles, retrieveBinaryBlob, saveMediaFile, incrementPlayCount } from '../lib/db';
+import { getMediaFile, getMemoryFile, registerMemoryFile, getAllDirectoryHandles, getAllMediaFiles, getAllPlaylists, retrieveBinaryBlob, saveMediaFile, incrementPlayCount } from '../lib/db';
 import { relinkFolderHandles, resolveFileFromDirectory, generateUUID, isInsideIframe, pickFolderToRelink, pickFilesToRelink, relinkFilesFromList } from '../lib/fileIngestion';
 import { syncChannel, getPopoutUrl } from '../lib/syncChannel';
 import {
@@ -208,12 +208,20 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
   // Permission recovery state
   const [needsPermission, setNeedsPermission] = useState<boolean>(false);
   const [pendingTrack, setPendingTrack] = useState<{ trackId: string; autoPlay?: boolean; startTime?: number } | null>(null);
+  const pendingTrackRef = useRef<{ trackId: string; autoPlay?: boolean; startTime?: number } | null>(null);
+  useEffect(() => {
+    pendingTrackRef.current = pendingTrack;
+  }, [pendingTrack]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const relinkInputRef = useRef<HTMLInputElement | null>(null);
 
-  // HUD visibility on mouse move
+  // HUD visibility and controls interaction tracking
   const [showHud, setShowHud] = useState<boolean>(true);
   const hudTimeoutRef = useRef<number | null>(null);
+  const isHoveringControlsRef = useRef<boolean>(false);
+  const [isScrubbing, setIsScrubbing] = useState<boolean>(false);
+  const isScrubbingRef = useRef<boolean>(false);
+  const [scrubTime, setScrubTime] = useState<number>(0);
 
   // Object URL tracking for revocation
   const currentObjectUrlRef = useRef<string | null>(null);
@@ -267,6 +275,15 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     if (q.length > 0) {
       setQueueIds(q);
       refreshQueueFiles(q);
+    } else {
+      getAllMediaFiles().then((all) => {
+        if (all.length > 0) {
+          const defaultQueue = all.map((f) => f.id);
+          setQueueIds(defaultQueue);
+          setStoredQueue(defaultQueue);
+          refreshQueueFiles(defaultQueue);
+        }
+      }).catch(() => {});
     }
   }, [refreshQueueFiles]);
 
@@ -603,7 +620,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     ) => {
       // 1. If this exact track is already loaded in the video element, do NOT reload or restart
       if (
-        (currentTrackRef.current?.id === trackId || lastLoadedTrackIdRef.current === trackId) &&
+        currentTrackRef.current?.id === trackId &&
         videoRef.current?.src &&
         videoRef.current.src !== '' &&
         videoRef.current.src !== window.location.href
@@ -642,8 +659,8 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         return;
       }
 
-      // 2. Prevent concurrent duplicate load calls for the same track
-      if (isLoadingTrackRef.current && lastLoadedTrackIdRef.current === trackId) {
+      // 2. Prevent concurrent duplicate load calls for the same track (unless directBlob is supplied)
+      if (!directBlob && isLoadingTrackRef.current && lastLoadedTrackIdRef.current === trackId) {
         return;
       }
 
@@ -709,7 +726,12 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         if (!mediaBlob && fileRecord?.handle) {
           try {
             // @ts-expect-error queryPermission mode check
-            const permStatus = await fileRecord.handle.queryPermission({ mode: 'read' });
+            let permStatus = await fileRecord.handle.queryPermission({ mode: 'read' });
+            if (permStatus !== 'granted' && (fileRecord.handle as any).requestPermission) {
+              try {
+                permStatus = await (fileRecord.handle as any).requestPermission({ mode: 'read' });
+              } catch {}
+            }
             if (permStatus === 'granted') {
               mediaBlob = await fileRecord.handle.getFile();
               registerMemoryFile(trackId, mediaBlob, fileRecord.handle);
@@ -725,7 +747,12 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           for (const dirHandle of dirHandles) {
             try {
               // @ts-expect-error queryPermission mode check
-              const dirPerm = await dirHandle.queryPermission({ mode: 'read' });
+              let dirPerm = await dirHandle.queryPermission({ mode: 'read' });
+              if (dirPerm !== 'granted' && (dirHandle as any).requestPermission) {
+                try {
+                  dirPerm = await (dirHandle as any).requestPermission({ mode: 'read' });
+                } catch {}
+              }
               if (dirPerm === 'granted') {
                 const resolved = await resolveFileFromDirectory(dirHandle, fileRecord.relativePath || '', fileRecord.name);
                 if (resolved?.file) {
@@ -752,48 +779,6 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
             };
           }
           registerMemoryFile(trackId, mediaBlob);
-
-          // If the requested track is already loaded in the video element, reset position and unpause if needed
-          if (
-            (currentTrackRef.current?.id === trackId || lastLoadedTrackIdRef.current === trackId) &&
-            videoRef.current?.src &&
-            videoRef.current.src !== '' &&
-            videoRef.current.src !== window.location.href
-          ) {
-            const seekPos = startTime !== undefined && startTime >= 0 ? startTime : 0;
-            if (videoRef.current) {
-              const performSeek = () => {
-                if (!videoRef.current) return;
-                try {
-                  videoRef.current.currentTime = seekPos;
-                  setCurrentTime(seekPos);
-                } catch {}
-              };
-              if (videoRef.current.readyState >= 1) {
-                performSeek();
-              } else {
-                videoRef.current.addEventListener('loadedmetadata', performSeek, { once: true });
-              }
-              videoRef.current.addEventListener('canplay', performSeek, { once: true });
-            }
-            if (autoPlay && videoRef.current.paused) {
-              const p = videoRef.current.play();
-              if (p !== undefined) {
-                p.catch(() => {
-                  if (videoRef.current) {
-                    videoRef.current.muted = true;
-                    if (!embedded) {
-                      wasAutoplayMutedRef.current = true;
-                      setShowAutoplayUnmutePrompt(true);
-                    }
-                    videoRef.current.play().catch(() => {});
-                  }
-                });
-              }
-            }
-            isLoadingTrackRef.current = false;
-            return;
-          }
 
           playMediaBlob(fileRecord, mediaBlob, autoPlay, startTime, optVolume, optMuted);
           isLoadingTrackRef.current = false;
@@ -1166,134 +1151,268 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     }
   };
 
-  // Picture-in-Picture toggle: Floating Video Controls Window (Video remains playing on main screen)
+  // Picture-in-Picture toggle: Floating Video Controls Window or Native HTML5 Video PiP
   const togglePiP = useCallback(async () => {
+    // 1. If floating controls window is open, close it
     if (isPipControlsActive()) {
       closePipControls();
       setIsPiP(false);
       syncChannel.post({ type: 'PIP_CHANGE', payload: { active: false } });
       return;
     }
-
-    const opened = await openPipControls({
-      getTitle: () => currentTrackRef.current?.name || 'Video Player',
-      getCurrentTime: () => videoRef.current?.currentTime || currentTime,
-      getDuration: () => videoRef.current?.duration || duration,
-      getIsPlaying: () => Boolean(videoRef.current && !videoRef.current.paused),
-      getIsMuted: () => Boolean(videoRef.current?.muted),
-      onPlayPause: () => {
-        if (videoRef.current) {
-          if (videoRef.current.paused) {
-            videoRef.current.play().catch(() => {});
-          } else {
-            videoRef.current.pause();
-          }
-        }
-      },
-      onPrev: () => handlePlayPrevRef.current(),
-      onNext: () => handlePlayNextRef.current(),
-      onSeek: (targetTime: number) => {
-        if (videoRef.current) {
-          videoRef.current.currentTime = targetTime;
-        }
-        setCurrentTime(targetTime);
-        syncChannel.post({ type: 'SEEK_TO', payload: { time: targetTime } });
-      },
-      onSkip: (delta: number) => {
-        if (videoRef.current) {
-          const newT = Math.max(0, Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + delta));
-          videoRef.current.currentTime = newT;
-          setCurrentTime(newT);
-          syncChannel.post({ type: 'SEEK_TO', payload: { time: newT } });
-        }
-      },
-      onToggleMute: () => {
-        if (videoRef.current) {
-          videoRef.current.muted = !videoRef.current.muted;
-          setIsMuted(videoRef.current.muted);
-          syncChannel.post({
-            type: 'SET_VOLUME',
-            payload: { volume, muted: videoRef.current.muted },
-          });
-        }
-      },
-      onClose: () => {
+    // 2. If native HTML5 video PiP is active, exit it
+    if (typeof document !== 'undefined' && document.pictureInPictureElement) {
+      try {
+        await document.exitPictureInPicture();
         setIsPiP(false);
         syncChannel.post({ type: 'PIP_CHANGE', payload: { active: false } });
-      },
-    });
+        return;
+      } catch {}
+    }
 
-    setIsPiP(opened);
-    syncChannel.post({ type: 'PIP_CHANGE', payload: { active: opened } });
+    // 3. Try Document PiP floating window
+    try {
+      const opened = await openPipControls({
+        getTitle: () => currentTrackRef.current?.name || 'Video Player',
+        getCurrentTime: () => videoRef.current?.currentTime || currentTime,
+        getDuration: () => videoRef.current?.duration || duration,
+        getIsPlaying: () => Boolean(videoRef.current && !videoRef.current.paused),
+        getIsMuted: () => Boolean(videoRef.current?.muted),
+        onPlayPause: () => {
+          if (videoRef.current) {
+            if (videoRef.current.paused) {
+              videoRef.current.play().catch(() => {});
+            } else {
+              videoRef.current.pause();
+            }
+          }
+        },
+        onPrev: () => handlePlayPrevRef.current(),
+        onNext: () => handlePlayNextRef.current(),
+        onSeek: (targetTime: number) => {
+          if (videoRef.current) {
+            videoRef.current.currentTime = targetTime;
+          }
+          setCurrentTime(targetTime);
+          syncChannel.post({ type: 'SEEK_TO', payload: { time: targetTime } });
+        },
+        onSkip: (delta: number) => {
+          if (videoRef.current) {
+            const newT = Math.max(0, Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + delta));
+            videoRef.current.currentTime = newT;
+            setCurrentTime(newT);
+            syncChannel.post({ type: 'SEEK_TO', payload: { time: newT } });
+          }
+        },
+        onToggleMute: () => {
+          if (videoRef.current) {
+            videoRef.current.muted = !videoRef.current.muted;
+            setIsMuted(videoRef.current.muted);
+            syncChannel.post({
+              type: 'SET_VOLUME',
+              payload: { volume, muted: videoRef.current.muted },
+            });
+          }
+        },
+        onClose: () => {
+          setIsPiP(false);
+          syncChannel.post({ type: 'PIP_CHANGE', payload: { active: false } });
+        },
+      });
+
+      if (opened) {
+        setIsPiP(true);
+        syncChannel.post({ type: 'PIP_CHANGE', payload: { active: true } });
+        return;
+      }
+    } catch {}
+
+    // 4. Fallback to native HTML5 video Picture-in-Picture
+    if (videoRef.current && typeof videoRef.current.requestPictureInPicture === 'function') {
+      try {
+        await videoRef.current.requestPictureInPicture();
+        setIsPiP(true);
+        syncChannel.post({ type: 'PIP_CHANGE', payload: { active: true } });
+      } catch (nativeErr) {
+        console.warn('Native Picture-in-Picture failed:', nativeErr);
+      }
+    }
   }, [currentTime, duration, volume, isMuted]);
 
   // Previous and Next Track Handlers for pop-out tab - Always start at beginning (0s)
   const handlePlayPrev = useCallback(async () => {
-    const queue = getStoredQueue();
-    const currentId = currentTrackRef.current?.id;
+    // 1. Rewind if past 3 seconds
+    if (videoRef.current && videoRef.current.currentTime > 3) {
+      videoRef.current.currentTime = 0;
+      setCurrentTime(0);
+      syncChannel.post({ type: 'SEEK_TO', payload: { time: 0 } });
+      return;
+    }
+
+    // 2. Direct synchronous call to opener window (instant & authoritative, has full in-memory file handles & catalog order)
+    if (typeof window !== 'undefined' && window.opener && !window.opener.closed) {
+      try {
+        if (typeof (window.opener as any).__PWA_PLAY_PREV__ === 'function') {
+          (window.opener as any).__PWA_PLAY_PREV__();
+          return;
+        }
+      } catch {}
+    }
+
+    // 3. Fallback for standalone / disconnected player:
+    const currentId = currentTrackRef.current?.id || lastLoadedTrackIdRef.current;
+    let prevId: string | null = null;
+
+    let queue = getStoredQueue();
+    if (queue.length === 0 && queueIds.length > 0) {
+      queue = queueIds;
+    }
+
     if (queue.length > 0) {
       const curIdx = currentId ? queue.indexOf(currentId) : -1;
-      let prevIdx = curIdx > 0 ? curIdx - 1 : queue.length - 1;
-      const prevId = queue[prevIdx];
-      if (prevId) {
-        loadTrackById(prevId, true, undefined, 0);
-        syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: prevId, autoPlay: true, currentTime: 0 } });
-        syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing', isPopout: !embedded } });
-        return;
+      if (curIdx >= 0) {
+        if (queue.length > 1) {
+          const prevIdx = (curIdx - 1 + queue.length) % queue.length;
+          prevId = queue[prevIdx] || null;
+        }
+      } else {
+        prevId = queue[queue.length - 1] || null;
       }
     }
 
-    syncChannel.post({ type: 'PREV_TRACK' });
-
-    // Fallback to all database files if queue is empty
-    try {
-      const allFiles = await getAllMediaFiles();
-      if (allFiles.length > 1) {
-        const curIdx = currentId ? allFiles.findIndex((f) => f.id === currentId) : -1;
-        let prevIdx = curIdx > 0 ? curIdx - 1 : allFiles.length - 1;
-        const target = allFiles[prevIdx];
-        if (target) {
-          loadTrackById(target.id, true, undefined, 0);
-          syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: target.id, autoPlay: true, currentTime: 0 } });
+    // Check active playlist if not found in queue
+    if (!prevId || prevId === currentId) {
+      try {
+        const playbackState = getActivePlaybackState();
+        if (playbackState.playlistId) {
+          const allPlaylists = await getAllPlaylists();
+          const pl = allPlaylists.find((p) => p.id === playbackState.playlistId);
+          if (pl && pl.fileIds.length > 0) {
+            const curIdx = currentId ? pl.fileIds.indexOf(currentId) : -1;
+            if (curIdx >= 0) {
+              if (pl.fileIds.length > 1) {
+                const prevIdx = (curIdx - 1 + pl.fileIds.length) % pl.fileIds.length;
+                prevId = pl.fileIds[prevIdx];
+              }
+            } else {
+              prevId = pl.fileIds[pl.fileIds.length - 1];
+            }
+          }
         }
-      } else if (videoRef.current) {
-        videoRef.current.currentTime = 0;
-        setCurrentTime(0);
-      }
-    } catch {}
-  }, [loadTrackById, embedded]);
+      } catch {}
+    }
+
+    // Check all media files if not found in playlist
+    if (!prevId || prevId === currentId) {
+      try {
+        const allFiles = await getAllMediaFiles();
+        if (allFiles.length > 1) {
+          const curIdx = currentId ? allFiles.findIndex((f) => f.id === currentId) : -1;
+          if (curIdx >= 0) {
+            const prevIdx = (curIdx - 1 + allFiles.length) % allFiles.length;
+            prevId = allFiles[prevIdx].id;
+          } else {
+            prevId = allFiles[allFiles.length - 1].id;
+          }
+        }
+      } catch {}
+    }
+
+    if (prevId && prevId !== currentId) {
+      syncChannel.post({
+        type: 'PREV_TRACK',
+        payload: { currentTrackId: currentId || undefined, targetTrackId: prevId },
+      });
+      loadTrackById(prevId, true, undefined, 0);
+    } else if (videoRef.current) {
+      videoRef.current.currentTime = 0;
+      setCurrentTime(0);
+      syncChannel.post({ type: 'SEEK_TO', payload: { time: 0 } });
+    }
+  }, [loadTrackById, queueIds]);
 
   const handlePlayNext = useCallback(async () => {
-    const queue = getStoredQueue();
-    const currentId = currentTrackRef.current?.id;
+    // 1. Direct synchronous call to opener window (instant & authoritative, has full in-memory file handles & catalog order)
+    if (typeof window !== 'undefined' && window.opener && !window.opener.closed) {
+      try {
+        if (typeof (window.opener as any).__PWA_PLAY_NEXT__ === 'function') {
+          (window.opener as any).__PWA_PLAY_NEXT__();
+          return;
+        }
+      } catch {}
+    }
+
+    // 2. Fallback for standalone / disconnected player:
+    const currentId = currentTrackRef.current?.id || lastLoadedTrackIdRef.current;
+    let nextId: string | null = null;
+
+    let queue = getStoredQueue();
+    if (queue.length === 0 && queueIds.length > 0) {
+      queue = queueIds;
+    }
+
     if (queue.length > 0) {
       const curIdx = currentId ? queue.indexOf(currentId) : -1;
-      let nextIdx = curIdx + 1 < queue.length ? curIdx + 1 : 0;
-      const nextId = queue[nextIdx];
-      if (nextId) {
-        loadTrackById(nextId, true, undefined, 0);
-        syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: nextId, autoPlay: true, currentTime: 0 } });
-        syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'playing', isPopout: !embedded } });
-        return;
+      if (curIdx >= 0) {
+        if (queue.length > 1) {
+          const nextIdx = (curIdx + 1) % queue.length;
+          nextId = queue[nextIdx] || null;
+        }
+      } else {
+        nextId = queue[0] || null;
       }
     }
 
-    syncChannel.post({ type: 'NEXT_TRACK' });
-
-    // Fallback to all database files if queue is empty
-    try {
-      const allFiles = await getAllMediaFiles();
-      if (allFiles.length > 1) {
-        const curIdx = currentId ? allFiles.findIndex((f) => f.id === currentId) : -1;
-        let nextIdx = curIdx + 1 < allFiles.length ? curIdx + 1 : 0;
-        const target = allFiles[nextIdx];
-        if (target) {
-          loadTrackById(target.id, true, undefined, 0);
-          syncChannel.post({ type: 'LOAD_TRACK', payload: { trackId: target.id, autoPlay: true, currentTime: 0 } });
+    // Check active playlist if not found in queue
+    if (!nextId || nextId === currentId) {
+      try {
+        const playbackState = getActivePlaybackState();
+        if (playbackState.playlistId) {
+          const allPlaylists = await getAllPlaylists();
+          const pl = allPlaylists.find((p) => p.id === playbackState.playlistId);
+          if (pl && pl.fileIds.length > 0) {
+            const curIdx = currentId ? pl.fileIds.indexOf(currentId) : -1;
+            if (curIdx >= 0) {
+              if (pl.fileIds.length > 1) {
+                const nextIdx = (curIdx + 1) % pl.fileIds.length;
+                nextId = pl.fileIds[nextIdx];
+              }
+            } else {
+              nextId = pl.fileIds[0];
+            }
+          }
         }
-      }
-    } catch {}
-  }, [loadTrackById, embedded]);
+      } catch {}
+    }
+
+    // Check all media files if not found in playlist
+    if (!nextId || nextId === currentId) {
+      try {
+        const allFiles = await getAllMediaFiles();
+        if (allFiles.length > 1) {
+          const curIdx = currentId ? allFiles.findIndex((f) => f.id === currentId) : -1;
+          if (curIdx >= 0) {
+            const nextIdx = (curIdx + 1) % allFiles.length;
+            nextId = allFiles[nextIdx].id;
+          } else {
+            nextId = allFiles[0].id;
+          }
+        }
+      } catch {}
+    }
+
+    if (nextId && nextId !== currentId) {
+      syncChannel.post({
+        type: 'NEXT_TRACK',
+        payload: { currentTrackId: currentId || undefined, targetTrackId: nextId },
+      });
+      loadTrackById(nextId, true, undefined, 0);
+    } else if (videoRef.current) {
+      videoRef.current.currentTime = 0;
+      setCurrentTime(0);
+      syncChannel.post({ type: 'SEEK_TO', payload: { time: 0 } });
+    }
+  }, [loadTrackById, queueIds]);
 
   useEffect(() => {
     handlePlayPrevRef.current = handlePlayPrev;
@@ -1662,7 +1781,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
 
             if (!isAlreadyLoaded) {
               if (!embedded || !isExternalActiveRef.current) {
-                playMediaBlob(fileRec, blob, pendingTrack?.autoPlay ?? true, pendingTrack?.startTime);
+                playMediaBlob(fileRec, blob, pendingTrackRef.current?.autoPlay ?? true, pendingTrackRef.current?.startTime);
               }
             }
           }
@@ -1759,6 +1878,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
             setFitMode(msg.payload.fitMode);
           }
           break;
+
 
         case 'PLAYER_CONNECTED':
           if (embedded && msg.payload?.isPopout) {
@@ -1976,6 +2096,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         trackId: activeTrack?.id,
         currentTime: videoRef.current?.currentTime || 0,
         duration: dur,
+        isPopout: !embedded,
       },
     });
 
@@ -2012,7 +2133,9 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     if (!videoRef.current) return;
     const cur = videoRef.current.currentTime;
     const dur = videoRef.current.duration || 0;
-    setCurrentTime(cur);
+    if (!isScrubbingRef.current) {
+      setCurrentTime(cur);
+    }
     if (dur > 0 && dur !== duration) {
       setDuration(dur);
       if (currentTrackRef.current) {
@@ -2062,6 +2185,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           trackId: currentTrackRef.current?.id,
           currentTime: cur,
           duration: dur,
+          isPopout: !embedded,
         },
       });
       setLastPlaybackTime(cur);
@@ -2149,9 +2273,10 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           trackId: currentTrackRef.current?.id,
           currentTime: cur,
           duration: dur,
+          isPopout: !embedded,
         },
       });
-      syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'paused' } });
+      syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'paused', isPopout: !embedded } });
       if (currentTrackRef.current?.id) {
         saveActivePlaybackState({
           trackId: currentTrackRef.current.id,
@@ -2238,32 +2363,28 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         payload: { trackId: currentTrack.id },
       });
 
-      // Autonomous queue advancement in popout player
+      // Autonomous queue advancement in player
       if (!isLooping && autoPlayNext) {
-        const queue = getStoredQueue();
-        const curIdx = currentTrack ? queue.indexOf(currentTrack.id) : -1;
-        if (queue.length > 0) {
-          const nextIdx = curIdx !== -1 && curIdx + 1 < queue.length ? curIdx + 1 : -1;
-          if (nextIdx !== -1) {
-            const nextTrackId = queue[nextIdx];
-            handlePlayQueueTrack(nextTrackId);
-          }
-        }
+        handlePlayNext();
       }
     }
   };
 
-  // Mouse idle HUD auto-hide
-  const handleMouseMove = () => {
+  // Mouse idle HUD auto-hide with controls hover and scrubbing protection
+  const resetHudTimeout = useCallback(() => {
     setShowHud(true);
     if (hudTimeoutRef.current) {
       window.clearTimeout(hudTimeoutRef.current);
     }
     hudTimeoutRef.current = window.setTimeout(() => {
-      if (isPlaying) {
+      if (isPlaying && !isHoveringControlsRef.current && !isScrubbingRef.current) {
         setShowHud(false);
       }
-    }, 2500);
+    }, 3500);
+  }, [isPlaying]);
+
+  const handleMouseMove = () => {
+    resetHudTimeout();
   };
 
   const formatTime = (secs: number) => {
@@ -2273,11 +2394,22 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
+  const displayTrack = currentTrack || (currentTrackRef.current) || (videoRef.current?.src ? {
+    id: lastLoadedTrackIdRef.current || 'active-video',
+    name: 'Playing Video',
+    mimeType: 'video/mp4',
+    size: 0,
+    lastModified: Date.now(),
+    createdAt: Date.now(),
+  } : null);
+
   return (
     <div
       ref={containerRef}
       id="pwa-player-container"
       onMouseMove={handleMouseMove}
+      onPointerDown={handleMouseMove}
+      onTouchStart={handleMouseMove}
       className={`w-full h-full bg-black overflow-hidden flex items-center justify-center select-none ${
         embedded ? 'relative rounded-2xl border border-neutral-800' : 'fixed inset-0 z-40'
       }`}
@@ -2451,6 +2583,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
           syncChannel.post({ type: 'STATE_CHANGE', payload: { state: 'idle' } });
         }}
         onClick={() => {
+          resetHudTimeout();
           if (videoRef.current) {
             if (videoRef.current.paused) {
               videoRef.current.play().catch((err) => {
@@ -2483,7 +2616,7 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       )}
 
       {/* Minimal Standby State (Clean, no useless branding) */}
-      {!currentTrack && !needsPermission && !errorMessage && (
+      {!displayTrack && !videoRef.current?.src && !needsPermission && !errorMessage && (
         <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center z-10 pointer-events-none">
           <div className="w-14 h-14 rounded-2xl bg-neutral-900 border border-neutral-800 flex items-center justify-center text-neutral-400 mb-3 shadow-xl">
             <Film className="w-7 h-7" />
@@ -2579,19 +2712,33 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
       {/* Floating Minimal HUD Overlay */}
       <div
         className={`absolute inset-0 pointer-events-none flex flex-col justify-between p-4 md:p-6 transition-opacity duration-300 z-20 ${
-          showHud || !isPlaying ? 'opacity-100' : 'opacity-0'
+          showHud || !isPlaying
+            ? 'opacity-100 pointer-events-none visible'
+            : 'opacity-0 pointer-events-none invisible'
         }`}
       >
         {/* Top Header Bar */}
-        <div className="flex items-center justify-between pointer-events-auto">
+        <div
+          onMouseEnter={() => {
+            isHoveringControlsRef.current = true;
+            if (hudTimeoutRef.current) window.clearTimeout(hudTimeoutRef.current);
+          }}
+          onMouseLeave={() => {
+            isHoveringControlsRef.current = false;
+            resetHudTimeout();
+          }}
+          className={`flex items-center justify-between transition-opacity duration-200 ${
+            showHud || !isPlaying ? 'pointer-events-auto' : 'pointer-events-none'
+          }`}
+        >
           <div className="flex items-center gap-2 bg-black/80 backdrop-blur-md border border-neutral-800 px-3 py-1.5 rounded-xl text-xs">
             <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             <span className="font-semibold text-white">Player</span>
-            {currentTrack && (
+            {displayTrack && (
               <>
                 <span className="text-neutral-600">•</span>
                 <span className="text-neutral-300 font-medium text-xs truncate max-w-[220px]">
-                  {currentTrack.name}
+                  {displayTrack.name}
                 </span>
               </>
             )}
@@ -2657,9 +2804,10 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         </div>
 
         {/* Center Big Play Trigger (Standalone mode only) */}
-        {!isPlaying && currentTrack && !needsPermission && !embedded && (
+        {!isPlaying && displayTrack && !needsPermission && !embedded && (
           <div className="self-center pointer-events-auto">
             <button
+              id="player-center-play-btn"
               onClick={() => {
                 videoRef.current?.play().catch((err) => {
                   console.error('Central play failed:', err);
@@ -2674,11 +2822,23 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
         )}
 
         {/* Bottom Scrubber Overlay (Standalone mode only; preview window is controlled from the Controller) */}
-        {currentTrack && !embedded && (
-          <div className="bg-black/85 backdrop-blur-md border border-neutral-800 rounded-2xl pointer-events-auto shadow-2xl p-4 space-y-3">
+        {displayTrack && !embedded && (
+          <div
+            onMouseEnter={() => {
+              isHoveringControlsRef.current = true;
+              if (hudTimeoutRef.current) window.clearTimeout(hudTimeoutRef.current);
+            }}
+            onMouseLeave={() => {
+              isHoveringControlsRef.current = false;
+              resetHudTimeout();
+            }}
+            className={`bg-black/85 backdrop-blur-md border border-neutral-800 rounded-2xl shadow-2xl p-4 space-y-3 transition-opacity duration-200 ${
+              showHud || !isPlaying ? 'pointer-events-auto' : 'pointer-events-none'
+            }`}
+          >
             <div className="flex items-center justify-between">
               <div className="min-w-0 pr-3">
-                <h4 className="text-xs font-bold text-white truncate max-w-[220px]">{currentTrack.name}</h4>
+                <h4 className="text-xs font-bold text-white truncate max-w-[220px]">{displayTrack.name}</h4>
               </div>
 
               <div className="flex items-center gap-1.5 sm:gap-2">
@@ -2855,26 +3015,81 @@ export const PlayerView: React.FC<PlayerViewProps> = ({
             {/* Scrubber */}
             <div className="space-y-1">
               <input
+                id="player-scrubber-slider"
                 type="range"
                 min="0"
-                max={duration || 100}
+                max={duration > 0 ? duration : 100}
                 step="0.1"
-                value={currentTime}
+                value={isScrubbing ? scrubTime : currentTime}
+                onMouseDown={() => {
+                  isScrubbingRef.current = true;
+                  setIsScrubbing(true);
+                  setScrubTime(currentTime);
+                }}
+                onTouchStart={() => {
+                  isScrubbingRef.current = true;
+                  setIsScrubbing(true);
+                  setScrubTime(currentTime);
+                }}
                 onChange={(e) => {
                   const targetSec = parseFloat(e.target.value);
-                  setCurrentTime(targetSec);
+                  setScrubTime(targetSec);
+                  if (!isScrubbingRef.current) {
+                    setCurrentTime(targetSec);
+                    if (videoRef.current) {
+                      videoRef.current.currentTime = targetSec;
+                    }
+                    syncChannel.post({
+                      type: 'SEEK_TO',
+                      payload: { time: targetSec },
+                    });
+                  }
+                }}
+                onMouseUp={() => {
+                  isScrubbingRef.current = false;
+                  setIsScrubbing(false);
+                  setCurrentTime(scrubTime);
                   if (videoRef.current) {
-                    videoRef.current.currentTime = targetSec;
+                    videoRef.current.currentTime = scrubTime;
                   }
                   syncChannel.post({
                     type: 'SEEK_TO',
-                    payload: { time: targetSec },
+                    payload: { time: scrubTime },
                   });
+                  resetHudTimeout();
+                }}
+                onTouchEnd={() => {
+                  isScrubbingRef.current = false;
+                  setIsScrubbing(false);
+                  setCurrentTime(scrubTime);
+                  if (videoRef.current) {
+                    videoRef.current.currentTime = scrubTime;
+                  }
+                  syncChannel.post({
+                    type: 'SEEK_TO',
+                    payload: { time: scrubTime },
+                  });
+                  resetHudTimeout();
+                }}
+                onPointerUp={() => {
+                  if (isScrubbingRef.current) {
+                    isScrubbingRef.current = false;
+                    setIsScrubbing(false);
+                    setCurrentTime(scrubTime);
+                    if (videoRef.current) {
+                      videoRef.current.currentTime = scrubTime;
+                    }
+                    syncChannel.post({
+                      type: 'SEEK_TO',
+                      payload: { time: scrubTime },
+                    });
+                    resetHudTimeout();
+                  }
                 }}
                 className="w-full h-1 accent-white bg-neutral-800 rounded-lg cursor-pointer"
               />
               <div className="flex justify-between text-xs font-sans font-medium tabular-nums text-neutral-400">
-                <span>{formatTime(currentTime)}</span>
+                <span>{formatTime(isScrubbing ? scrubTime : currentTime)}</span>
                 <span>{formatTime(duration)}</span>
               </div>
             </div>
